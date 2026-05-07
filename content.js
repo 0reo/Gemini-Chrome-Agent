@@ -58,7 +58,8 @@ chrome.runtime.onMessage.addListener((message) => {
         const promptBox = document.querySelector('rich-textarea div[contenteditable="true"], .ql-editor'); 
         
         if (promptBox) {
-            const outputText = message.data.output || message.data.message;
+            // Grab output, OR error, OR message, OR just dump the raw JSON so we never get a blank string
+            const outputText = message.data.output || message.data.error || message.data.message || JSON.stringify(message.data);
             const fullText = `System Result:\n${outputText}`;
             
             // 1. Focus the box so we can simulate user input
