@@ -78,10 +78,15 @@ chrome.runtime.onMessage.addListener((message) => {
             promptBox.scrollIntoView();
             promptBox.focus();
             
-            // 2. Use keystroke simulation (execCommand) so the React editor respects the input
-            document.execCommand('selectAll', false, null);
-            document.execCommand('delete', false, null);
-            document.execCommand('insertText', false, fullText);
+            // 2. The Winning Injection Method
+            promptBox.innerHTML = `<p>${fullText.replace(/\n/g, '<br>')}</p>`;
+            
+            const selection = window.getSelection();
+            const range = document.createRange();
+            range.selectNodeContents(promptBox);
+            range.collapse(false);
+            selection.removeAllRanges();
+            selection.addRange(range);
             
             // 3. Wake up the Send button
             promptBox.dispatchEvent(new Event('input', { bubbles: true }));
@@ -89,18 +94,4 @@ chrome.runtime.onMessage.addListener((message) => {
             let attempts = 0;
             const clickInterval = setInterval(() => {
                 const sendButton = document.querySelector('button[aria-label*="Send"], button[mattooltip*="Send"]');
-                if (sendButton && !sendButton.disabled) {
-                    clearInterval(clickInterval);
-                    console.log("Auto-clicking Send...");
-                    sendButton.click();
-                } else if (attempts >= 15) {
-                    clearInterval(clickInterval);
-                    console.warn("Send button never became enabled.");
-                }
-                attempts++;
-            }, 200);
-        } else {
-            console.error("Could not find the Gemini text box to inject the result!");
-        }
-    }
-});
+                if (sendButton && !
