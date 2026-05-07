@@ -1,10 +1,14 @@
 let port = chrome.runtime.connectNative('com.local.gemini_agent');
 
 port.onMessage.addListener((response) => {
-    // When the Python script finishes writing a file or running a shell command,
-    // it sends the output back here. We route it back to the Gemini web tab.
-    chrome.tabs.query({active: true, currentWindow: true}, function(tabs) {
-        chrome.tabs.sendMessage(tabs[0].id, {type: "HOST_RESPONSE", data: response});
+    // When the Python script finishes, explicitly look for the Gemini tab
+    // instead of relying on the current active window.
+    chrome.tabs.query({url: "*://gemini.google.com/*"}, function(tabs) {
+        if (tabs && tabs.length > 0) {
+            chrome.tabs.sendMessage(tabs[0].id, {type: "HOST_RESPONSE", data: response});
+        } else {
+            console.warn("Host responded, but no Gemini tab was found to receive it:", response);
+        }
     });
 });
 
