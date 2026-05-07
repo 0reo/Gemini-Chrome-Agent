@@ -1,6 +1,6 @@
 console.log("Gemini Agent content script loaded!");
 
-// 1. Robust History Ignoring: Wait for the DOM to stabilize
+// 1. Robust History Ignoring
 let isPageLoading = true;
 let historyTimeout;
 const historyObserver = new MutationObserver(() => {
@@ -15,7 +15,6 @@ const historyObserver = new MutationObserver(() => {
 });
 historyObserver.observe(document.body, { childList: true, subtree: true });
 
-// Fallback if no history exists
 setTimeout(() => { 
     if (isPageLoading) { 
         isPageLoading = false; 
@@ -28,14 +27,16 @@ const observer = new MutationObserver(() => {
     const codeBlocks = document.querySelectorAll('pre code, code');
     
     codeBlocks.forEach(block => {
-        if (block.dataset.processed) return;
-        
         const text = block.innerText;
+        
+        // If we already processed THIS EXACT text, skip it.
+        // This prevents the loop breaking when React recycles DOM elements (like on Regenerate).
+        if (block.dataset.processedText === text) return;
         
         if (text.includes('"action":')) {
             try {
                 let payload = JSON.parse(text);
-                block.dataset.processed = "true"; 
+                block.dataset.processedText = text; // Mark this specific payload text as processed
                 
                 if (isPageLoading) {
                     console.log("Ignored history block:", payload.action);
@@ -44,7 +45,9 @@ const observer = new MutationObserver(() => {
                 
                 console.log("Live agent payload detected!", payload);
                 chrome.runtime.sendMessage({type: "SEND_TO_HOST", payload: payload});
-            } catch (e) {}
+            } catch (e) {
+                // Still streaming JSON
+            }
         }
     });
 });
@@ -58,7 +61,6 @@ chrome.runtime.onMessage.addListener((message) => {
         const promptBox = document.querySelector('rich-textarea div[contenteditable="true"], .ql-editor'); 
         
         if (promptBox) {
-            // Ensure we capture literally anything returned so it's never blank
             let outputText = message.data.output || message.data.error || message.data.message;
             
             // If it's completely empty, fallback to the raw JSON string
@@ -75,20 +77,16 @@ chrome.runtime.onMessage.addListener((message) => {
             document.execCommand('selectAll', false, null);
             document.execCommand('delete', false, null);
             
-            // 3. Inject text using a true React-compatible Paste Event
-            const dataTransfer = new DataTransfer();
-            dataTransfer.setData('text/plain', fullText);
-            const pasteEvent = new ClipboardEvent('paste', {
-                clipboardData: dataTransfer,
-                bubbles: true,
-                cancelable: true
-            });
-            promptBox.dispatchEvent(pasteEvent);
+            // 3. Inject text safely
+            document.execCommand('insertText', false, fullText);
             
-            // 4. Robust auto-clicker: Poll for the button to be ready (max 3 seconds)
+            // 4. Wake up React so it knows the text changed and enables the Send button
+            promptBox.dispatchEvent(new Event('input', { bubbles: true }));
+            
+            // 5. Poll for the Send button to become enabled
             let attempts = 0;
             const clickInterval = setInterval(() => {
-                const sendButton = document.querySelector('button[aria-label="Send message"]');
+                const sendButton = document.querySelector('button[aria-label*="Send"]');
                 if (sendButton && !sendButton.disabled) {
                     clearInterval(clickInterval);
                     console.log("Auto-clicking Send...");
