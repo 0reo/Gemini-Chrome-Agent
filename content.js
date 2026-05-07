@@ -58,35 +58,47 @@ chrome.runtime.onMessage.addListener((message) => {
         const promptBox = document.querySelector('rich-textarea div[contenteditable="true"], .ql-editor'); 
         
         if (promptBox) {
-            // Grab output, OR error, OR message, OR just dump the raw JSON so we never get a blank string
-            const outputText = message.data.output || message.data.error || message.data.message || JSON.stringify(message.data);
+            // Ensure we capture literally anything returned so it's never blank
+            let outputText = message.data.output || message.data.error || message.data.message;
+            
+            // If it's completely empty, fallback to the raw JSON string
+            if (!outputText || outputText.trim() === "") {
+                outputText = JSON.stringify(message.data);
+            }
+            
             const fullText = `System Result:\n${outputText}`;
             
-            // 1. Focus the box so we can simulate user input
+            // 1. Focus the box
             promptBox.focus();
             
-            // 2. Select any existing text in the box and clear it
+            // 2. Clear the box safely
             document.execCommand('selectAll', false, null);
             document.execCommand('delete', false, null);
             
-            // 3. Simulate a "Paste" action. This safely formats newlines 
-        // and prevents the React UI from treating \n as the Enter key.
-        document.execCommand('insertText', false, fullText);
-        
-        // 4. Robust auto-clicker: Poll for the button to be ready (max 3 seconds)
-        let attempts = 0;
-        const clickInterval = setInterval(() => {
-            const sendButton = document.querySelector('button[aria-label="Send message"]');
-            if (sendButton && !sendButton.disabled) {
-                clearInterval(clickInterval);
-                console.log("Auto-clicking Send...");
-                sendButton.click();
-            } else if (attempts >= 15) {
-                clearInterval(clickInterval);
-                console.warn("Send button never became enabled.");
-            }
-            attempts++;
-        }, 200);
+            // 3. Inject text using a true React-compatible Paste Event
+            const dataTransfer = new DataTransfer();
+            dataTransfer.setData('text/plain', fullText);
+            const pasteEvent = new ClipboardEvent('paste', {
+                clipboardData: dataTransfer,
+                bubbles: true,
+                cancelable: true
+            });
+            promptBox.dispatchEvent(pasteEvent);
+            
+            // 4. Robust auto-clicker: Poll for the button to be ready (max 3 seconds)
+            let attempts = 0;
+            const clickInterval = setInterval(() => {
+                const sendButton = document.querySelector('button[aria-label="Send message"]');
+                if (sendButton && !sendButton.disabled) {
+                    clearInterval(clickInterval);
+                    console.log("Auto-clicking Send...");
+                    sendButton.click();
+                } else if (attempts >= 15) {
+                    clearInterval(clickInterval);
+                    console.warn("Send button never became enabled.");
+                }
+                attempts++;
+            }, 200);
+        }
     }
-}
 });
