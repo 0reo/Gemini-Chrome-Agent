@@ -1,10 +1,28 @@
 console.log("Gemini Agent content script loaded!");
 
+// 1. Robust History Ignoring: Wait for the DOM to stabilize
 let isPageLoading = true;
-setTimeout(() => {
-    isPageLoading = false;
-    console.log("History loaded. Agent is now ARMED.");
-}, 3000);
+let historyTimeout;
+const historyObserver = new MutationObserver(() => {
+    clearTimeout(historyTimeout);
+    historyTimeout = setTimeout(() => {
+        if (isPageLoading) {
+            isPageLoading = false;
+            console.log("History stabilized. Agent is now ARMED.");
+            historyObserver.disconnect();
+        }
+    }, 1500);
+});
+historyObserver.observe(document.body, { childList: true, subtree: true });
+
+// Fallback if no history exists
+setTimeout(() => { 
+    if (isPageLoading) { 
+        isPageLoading = false; 
+        console.log("Agent ARMED via fallback."); 
+        historyObserver.disconnect(); 
+    } 
+}, 4000);
 
 const observer = new MutationObserver(() => {
     const codeBlocks = document.querySelectorAll('pre code, code');
@@ -51,19 +69,23 @@ chrome.runtime.onMessage.addListener((message) => {
             document.execCommand('delete', false, null);
             
             // 3. Simulate a "Paste" action. This safely formats newlines 
-            // and prevents the React UI from treating \n as the Enter key.
-            document.execCommand('insertText', false, fullText);
-            
-            // 4. Wait 500ms for the UI to enable the Send button, then click it
-            setTimeout(() => {
-                const sendButton = document.querySelector('button[aria-label="Send message"]');
-                if (sendButton && !sendButton.disabled) {
-                    console.log("Auto-clicking Send...");
-                    sendButton.click();
-                } else {
-                    console.warn("Send button not found or is disabled.");
-                }
-            }, 500);
-        }
+        // and prevents the React UI from treating \n as the Enter key.
+        document.execCommand('insertText', false, fullText);
+        
+        // 4. Robust auto-clicker: Poll for the button to be ready (max 3 seconds)
+        let attempts = 0;
+        const clickInterval = setInterval(() => {
+            const sendButton = document.querySelector('button[aria-label="Send message"]');
+            if (sendButton && !sendButton.disabled) {
+                clearInterval(clickInterval);
+                console.log("Auto-clicking Send...");
+                sendButton.click();
+            } else if (attempts >= 15) {
+                clearInterval(clickInterval);
+                console.warn("Send button never became enabled.");
+            }
+            attempts++;
+        }, 200);
     }
+}
 });
