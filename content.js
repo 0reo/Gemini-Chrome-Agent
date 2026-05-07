@@ -23,7 +23,7 @@ setTimeout(() => {
     } 
 }, 4000);
 
-// NEW: Prevent duplicate executions from whitespace streaming and React DOM teardowns
+// Global lock to prevent rapid-fire duplicates across different elements
 const recentPayloads = new Set();
 
 const observer = new MutationObserver(() => {
@@ -35,23 +35,22 @@ const observer = new MutationObserver(() => {
         if (text.includes('"action":')) {
             try {
                 let payload = JSON.parse(text);
+                let payloadStr = JSON.stringify(payload); // Normalize formatting
                 
-                // Normalize the payload to a string (ignores all whitespace/formatting changes)
-                let payloadStr = JSON.stringify(payload);
+                // If THIS specific code block already processed this exact payload, skip it.
+                if (block.dataset.processedPayload === payloadStr) return;
+                block.dataset.processedPayload = payloadStr;
                 
-                // If we ALREADY sent this exact JSON block in the last 4 seconds, skip it!
+                // If ANY block recently fired this exact payload, skip it (4-second lock)
                 if (recentPayloads.has(payloadStr)) return;
                 
+                recentPayloads.add(payloadStr);
+                setTimeout(() => recentPayloads.delete(payloadStr), 4000);
+                
                 if (isPageLoading) {
-                    // Add history payloads to the set so they don't misfire later
-                    recentPayloads.add(payloadStr);
+                    console.log("Ignored history block:", payload.action);
                     return; 
                 }
-                
-                // Lock this payload from being sent again
-                recentPayloads.add(payloadStr);
-                // Unlock it after 4 seconds so you can intentionally run the same command again later
-                setTimeout(() => recentPayloads.delete(payloadStr), 4000);
                 
                 console.log("Live agent payload detected!", payload);
                 chrome.runtime.sendMessage({type: "SEND_TO_HOST", payload: payload});
@@ -73,27 +72,18 @@ chrome.runtime.onMessage.addListener((message) => {
         if (promptBox) {
             let outputText = message.data.output || message.data.error || message.data.message;
             
-            // If it's completely empty, fallback to the raw JSON string
             if (!outputText || outputText.trim() === "") {
                 outputText = JSON.stringify(message.data);
             }
             
             const fullText = `System Result:\n${outputText}`;
             
-            // 1. Focus the box
             promptBox.focus();
-            
-            // 2. Clear the box safely
             document.execCommand('selectAll', false, null);
             document.execCommand('delete', false, null);
-            
-            // 3. Inject text safely
             document.execCommand('insertText', false, fullText);
-            
-            // 4. Wake up React so it knows the text changed and enables the Send button
             promptBox.dispatchEvent(new Event('input', { bubbles: true }));
             
-            // 5. Poll for the Send button to become enabled
             let attempts = 0;
             const clickInterval = setInterval(() => {
                 const sendButton = document.querySelector('button[aria-label*="Send"]');
