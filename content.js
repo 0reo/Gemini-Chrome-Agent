@@ -1,6 +1,5 @@
 console.log("Gemini Agent content script loaded!");
 
-// 1. Robust History Ignoring
 let isPageLoading = true;
 let historyTimeout;
 const historyObserver = new MutationObserver(() => {
@@ -23,7 +22,6 @@ setTimeout(() => {
     } 
 }, 4000);
 
-// Global lock to prevent rapid-fire duplicates across different elements
 const recentPayloads = new Set();
 
 const observer = new MutationObserver(() => {
@@ -35,13 +33,11 @@ const observer = new MutationObserver(() => {
         if (text.includes('"action":')) {
             try {
                 let payload = JSON.parse(text);
-                let payloadStr = JSON.stringify(payload); // Normalize formatting
+                let payloadStr = JSON.stringify(payload);
                 
-                // If THIS specific code block already processed this exact payload, skip it.
                 if (block.dataset.processedPayload === payloadStr) return;
                 block.dataset.processedPayload = payloadStr;
                 
-                // If ANY block recently fired this exact payload, skip it (4-second lock)
                 if (recentPayloads.has(payloadStr)) return;
                 
                 recentPayloads.add(payloadStr);
@@ -67,26 +63,32 @@ chrome.runtime.onMessage.addListener((message) => {
     if (message.type === "HOST_RESPONSE") {
         console.log("Received response from Ubuntu:", message.data);
         
-        const promptBox = document.querySelector('rich-textarea div[contenteditable="true"], .ql-editor'); 
+        const promptBox = document.querySelector('rich-textarea [contenteditable="true"], [role="textbox"][contenteditable="true"], .ql-editor'); 
         
         if (promptBox) {
-            let outputText = message.data.output || message.data.error || message.data.message;
+            let outputText = message.data?.output || message.data?.error || message.data?.message;
             
             if (!outputText || outputText.trim() === "") {
-                outputText = JSON.stringify(message.data);
+                outputText = JSON.stringify(message.data) || "NO DATA RETURNED FROM PYTHON";
             }
             
             const fullText = `System Result:\n${outputText}`;
             
+            // 1. Focus the box aggressively
+            promptBox.scrollIntoView();
             promptBox.focus();
+            
+            // 2. Use keystroke simulation (execCommand) so the React editor respects the input
             document.execCommand('selectAll', false, null);
             document.execCommand('delete', false, null);
             document.execCommand('insertText', false, fullText);
+            
+            // 3. Wake up the Send button
             promptBox.dispatchEvent(new Event('input', { bubbles: true }));
             
             let attempts = 0;
             const clickInterval = setInterval(() => {
-                const sendButton = document.querySelector('button[aria-label*="Send"]');
+                const sendButton = document.querySelector('button[aria-label*="Send"], button[mattooltip*="Send"]');
                 if (sendButton && !sendButton.disabled) {
                     clearInterval(clickInterval);
                     console.log("Auto-clicking Send...");
@@ -97,6 +99,8 @@ chrome.runtime.onMessage.addListener((message) => {
                 }
                 attempts++;
             }, 200);
+        } else {
+            console.error("Could not find the Gemini text box to inject the result!");
         }
     }
 });
