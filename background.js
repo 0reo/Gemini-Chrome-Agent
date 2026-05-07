@@ -1,4 +1,5 @@
 let port = null;
+let lastActiveTabId = null; // We will store the exact tab that sent the request
 
 function connectToHost() {
     console.log("Connecting to Ubuntu host...");
@@ -6,12 +7,14 @@ function connectToHost() {
     
     port.onMessage.addListener((response) => {
         console.log("Received from Ubuntu:", response);
-        chrome.tabs.query({url: "*://gemini.google.com/*"}, function(tabs) {
-            if (tabs && tabs.length > 0) {
-                chrome.tabs.sendMessage(tabs[0].id, {type: "HOST_RESPONSE", data: response})
-                    .catch(err => console.warn("Could not send to Gemini tab", err));
-            }
-        });
+        
+        // Send the response back to the EXACT tab that requested it
+        if (lastActiveTabId) {
+            chrome.tabs.sendMessage(lastActiveTabId, {type: "HOST_RESPONSE", data: response})
+                .catch(err => console.warn("Could not send to the active Gemini tab", err));
+        } else {
+            console.warn("No active tab ID saved to route the response to.");
+        }
     });
 
     port.onDisconnect.addListener(() => {
@@ -20,14 +23,17 @@ function connectToHost() {
     });
 }
 
-// Connect immediately when the service worker starts
 connectToHost();
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.type === "SEND_TO_HOST") {
         console.log("Received payload from Gemini tab:", request.payload);
         
-        // If the Service Worker went to sleep and lost the connection, reconnect!
+        // Save the exact Tab ID of the tab making the request
+        if (sender.tab && sender.tab.id) {
+            lastActiveTabId = sender.tab.id;
+        }
+        
         if (!port) {
             connectToHost();
         }
