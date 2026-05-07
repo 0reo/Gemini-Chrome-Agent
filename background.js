@@ -5,7 +5,12 @@ port.onMessage.addListener((response) => {
     // instead of relying on the current active window.
     chrome.tabs.query({url: "*://gemini.google.com/*"}, function(tabs) {
         if (tabs && tabs.length > 0) {
-            chrome.tabs.sendMessage(tabs[0].id, {type: "HOST_RESPONSE", data: response});
+            // Attempt to send the message, and gracefully catch the error if the target tab 
+            // hasn't been refreshed to load the latest content.js
+            chrome.tabs.sendMessage(tabs[0].id, {type: "HOST_RESPONSE", data: response})
+                .catch((err) => {
+                    console.warn("Message bounced: The Gemini tab needs to be refreshed to load content.js", err);
+                });
         } else {
             console.warn("Host responded, but no Gemini tab was found to receive it:", response);
         }
