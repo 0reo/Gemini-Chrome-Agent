@@ -23,25 +23,35 @@ setTimeout(() => {
     } 
 }, 4000);
 
+// NEW: Prevent duplicate executions from whitespace streaming and React DOM teardowns
+const recentPayloads = new Set();
+
 const observer = new MutationObserver(() => {
     const codeBlocks = document.querySelectorAll('pre code, code');
     
     codeBlocks.forEach(block => {
         const text = block.innerText;
         
-        // If we already processed THIS EXACT text, skip it.
-        // This prevents the loop breaking when React recycles DOM elements (like on Regenerate).
-        if (block.dataset.processedText === text) return;
-        
         if (text.includes('"action":')) {
             try {
                 let payload = JSON.parse(text);
-                block.dataset.processedText = text; // Mark this specific payload text as processed
+                
+                // Normalize the payload to a string (ignores all whitespace/formatting changes)
+                let payloadStr = JSON.stringify(payload);
+                
+                // If we ALREADY sent this exact JSON block in the last 4 seconds, skip it!
+                if (recentPayloads.has(payloadStr)) return;
                 
                 if (isPageLoading) {
-                    console.log("Ignored history block:", payload.action);
+                    // Add history payloads to the set so they don't misfire later
+                    recentPayloads.add(payloadStr);
                     return; 
                 }
+                
+                // Lock this payload from being sent again
+                recentPayloads.add(payloadStr);
+                // Unlock it after 4 seconds so you can intentionally run the same command again later
+                setTimeout(() => recentPayloads.delete(payloadStr), 4000);
                 
                 console.log("Live agent payload detected!", payload);
                 chrome.runtime.sendMessage({type: "SEND_TO_HOST", payload: payload});
