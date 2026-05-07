@@ -48,18 +48,15 @@ while True:
             command = msg.get('command')
             logging.info(f"Executing shell command: {command}")
             try:
-                # Use shell=True for pipes/redirects. text=True handles decoding automatically.
                 result = subprocess.run(
                     command, 
                     shell=True, 
                     capture_output=True, 
                     text=True, 
-                    timeout=30 # Add a timeout to prevent hanging the loop
+                    timeout=30 
                 )
-                
                 output = result.stdout or ""
                 error = result.stderr or ""
-                
                 combined_output = output
                 if error:
                     combined_output += f"\n--- Standard Error ---\n{error}"
@@ -68,7 +65,6 @@ while True:
                     combined_output = f"[Command completed with exit code {result.returncode} and no output]"
                 
                 send_message({'status': 'success', 'output': combined_output, 'code': result.returncode})
-                
             except subprocess.TimeoutExpired:
                 logging.warning("Command timed out")
                 send_message({'status': 'error', 'error': 'Command timed out after 30 seconds.'})
@@ -77,7 +73,7 @@ while True:
                 send_message({'status': 'error', 'error': f'Subprocess Exception: {str(e)}'})
                 
         elif action == 'write_file':
-            filepath = msg.get('filepath')
+            filepath = os.path.expanduser(msg.get('filepath'))
             content = msg.get('content')
             logging.info(f"Writing file: {filepath}")
             try:
@@ -88,6 +84,21 @@ while True:
             except Exception as e:
                 logging.error(f"File write error: {e}")
                 send_message({'status': 'error', 'error': f'File write error: {str(e)}'})
+
+        elif action == 'read_file':
+            filepath = os.path.expanduser(msg.get('filepath'))
+            logging.info(f"Reading file: {filepath}")
+            try:
+                if os.path.exists(filepath):
+                    with open(filepath, 'r') as f:
+                        content = f.read()
+                    send_message({'status': 'success', 'output': content})
+                else:
+                    send_message({'status': 'error', 'error': f'File not found: {filepath}'})
+            except Exception as e:
+                logging.error(f"File read error: {e}")
+                send_message({'status': 'error', 'error': f'File read error: {str(e)}'})
+
         else:
             logging.warning(f"Unknown action received: {action}")
             send_message({'status': 'error', 'error': f'Unknown action: {action}'})
