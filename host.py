@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+"""Native messaging host for Gemini Local Agent — Protocol v2."""
 import sys
 import json
 import struct
@@ -6,14 +7,13 @@ import subprocess
 import os
 import logging
 
-# Configure logging to help debug the "System Result" empty issue
 logging.basicConfig(
     filename='/tmp/gemini_host.log',
     level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 
-MAX_OUTPUT_SIZE = 1024 * 1024  # 1MB max to prevent native messaging breakage
+MAX_OUTPUT_SIZE = 1024 * 1024  # 1MB
 
 
 def get_message():
@@ -43,7 +43,6 @@ def send_message(message_dict):
 
 
 def truncate_output(text, max_bytes=MAX_OUTPUT_SIZE):
-    """Truncate output to prevent breaking the native messaging protocol."""
     if text is None:
         text = ""
     encoded = text.encode('utf-8')
@@ -53,85 +52,160 @@ def truncate_output(text, max_bytes=MAX_OUTPUT_SIZE):
     return truncated + f"\n\n[Output truncated: exceeded {max_bytes} bytes]"
 
 
-logging.info("Gemini Host Script Started")
+def handle_run_shell(msg):
+    command = msg.get('command')
+    req_id = msg.get('id', 'unknown')
+    logging.info(f"[{req_id}] Executing shell command: {command}")
+    try:
+        result = subprocess.run(
+            command,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        output = result.stdout or ""
+        error = result.stderr or ""
+        combined = output
+        if error:
+            combined += f"\n--- Standard Error ---\n{error}"
+        if not combined.strip():
+            combined = f"[Command completed with exit code {result.returncode} and no output]"
+
+        combined = truncate_output(combined)
+        send_message({
+            'id': req_id,
+            'status': 'success',
+            'output': combined,
+            'code': result.returncode,
+            'meta': {'duration_ms': 0}
+        })
+    except subprocess.TimeoutExpired:
+        logging.warning(f"[{req_id}] Command timed out")
+        send_message({
+            'id': req_id,
+            'status': 'error',
+            'error': 'Command timed out after 30 seconds.'
+        })
+    except Exception as e:
+        logging.error(f"[{req_id}] Subprocess error: {e}")
+        send_message({
+            'id': req_id,
+            'status': 'error',
+            'error': f'Subprocess Exception: {str(e)}'
+        })
+
+
+def handle_write_file(msg):
+    filepath = os.path.expanduser(msg.get('filepath'))
+    content = msg.get('content')
+    req_id = msg.get('id', 'unknown')
+    logging.info(f"[{req_id}] Writing file: {filepath}")
+    try:
+        directory = os.path.dirname(filepath)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        with open(filepath, 'w', encoding='utf-8') as f:
+            f.write(content)
+        send_message({
+            'id': req_id,
+            'status': 'success',
+            'message': f'File {filepath} written successfully.'
+        })
+    except Exception as e:
+        logging.error(f"[{req_id}] File write error: {e}")
+        send_message({
+            'id': req_id,
+            'status': 'error',
+            'error': f'File write error: {str(e)}'
+        })
+
+
+def handle_read_file(msg):
+    filepath = os.path.expanduser(msg.get('filepath'))
+    req_id = msg.get('id', 'unknown')
+    logging.info(f"[{req_id}] Reading file: {filepath}")
+    try:
+        if os.path.exists(filepath):
+            with open(filepath, 'r', encoding='utf-8') as f:
+                content = f.read()
+            content = truncate_output(content)
+            send_message({
+                'id': req_id,
+                'status': 'success',
+                'output': content
+            })
+        else:
+            send_message({
+                'id': req_id,
+                'status': 'error',
+                'error': f'File not found: {filepath}'
+            })
+    except Exception as e:
+        logging.error(f"[{req_id}] File read error: {e}")
+        send_message({
+            'id': req_id,
+            'status': 'error',
+            'error': f'File read error: {str(e)}'
+        })
+
+
+def handle_list_files(msg):
+    filepath = os.path.expanduser(msg.get('filepath'))
+    req_id = msg.get('id', 'unknown')
+    logging.info(f"[{req_id}] Listing files: {filepath}")
+    try:
+        if os.path.isdir(filepath):
+            entries = os.listdir(filepath)
+            output = '\n'.join(entries)
+        elif os.path.exists(filepath):
+            output = f"{filepath} is a file, not a directory."
+        else:
+            output = f"Path not found: {filepath}"
+        send_message({
+            'id': req_id,
+            'status': 'success',
+            'output': output
+        })
+    except Exception as e:
+        send_message({
+            'id': req_id,
+            'status': 'error',
+            'error': f'List error: {str(e)}'
+        })
+
+
+logging.info("Gemini Host v2 Started")
 
 while True:
     try:
         msg = get_message()
         action = msg.get('action')
-        
+        req_id = msg.get('id', 'unknown')
+
         if action == 'run_shell':
-            command = msg.get('command')
-            logging.info(f"Executing shell command: {command}")
-            try:
-                result = subprocess.run(
-                    command, 
-                    shell=True, 
-                    capture_output=True, 
-                    text=True, 
-                    timeout=30 
-                )
-                output = result.stdout or ""
-                error = result.stderr or ""
-                combined_output = output
-                if error:
-                    combined_output += f"\n--- Standard Error ---\n{error}"
-                
-                if not combined_output.strip():
-                    combined_output = f"[Command completed with exit code {result.returncode} and no output]"
-                
-                combined_output = truncate_output(combined_output)
-                
-                send_message({
-                    'status': 'success',
-                    'output': combined_output,
-                    'code': result.returncode
-                })
-            except subprocess.TimeoutExpired:
-                logging.warning("Command timed out")
-                send_message({'status': 'error', 'error': 'Command timed out after 30 seconds.'})
-            except Exception as e:
-                logging.error(f"Subprocess error: {e}")
-                send_message({'status': 'error', 'error': f'Subprocess Exception: {str(e)}'})
-                
+            handle_run_shell(msg)
         elif action == 'write_file':
-            filepath = os.path.expanduser(msg.get('filepath'))
-            content = msg.get('content')
-            logging.info(f"Writing file: {filepath}")
-            try:
-                directory = os.path.dirname(filepath)
-                if directory:
-                    os.makedirs(directory, exist_ok=True)
-                with open(filepath, 'w', encoding='utf-8') as f:
-                    f.write(content)
-                send_message({'status': 'success', 'message': f'File {filepath} written successfully.'})
-            except Exception as e:
-                logging.error(f"File write error: {e}")
-                send_message({'status': 'error', 'error': f'File write error: {str(e)}'})
-
+            handle_write_file(msg)
         elif action == 'read_file':
-            filepath = os.path.expanduser(msg.get('filepath'))
-            logging.info(f"Reading file: {filepath}")
-            try:
-                if os.path.exists(filepath):
-                    with open(filepath, 'r', encoding='utf-8') as f:
-                        content = f.read()
-                    content = truncate_output(content)
-                    send_message({'status': 'success', 'output': content})
-                else:
-                    send_message({'status': 'error', 'error': f'File not found: {filepath}'})
-            except Exception as e:
-                logging.error(f"File read error: {e}")
-                send_message({'status': 'error', 'error': f'File read error: {str(e)}'})
-
+            handle_read_file(msg)
+        elif action == 'list_files':
+            handle_list_files(msg)
         else:
-            logging.warning(f"Unknown action received: {action}")
-            send_message({'status': 'error', 'error': f'Unknown action: {action}'})
-            
+            logging.warning(f"[{req_id}] Unknown action: {action}")
+            send_message({
+                'id': req_id,
+                'status': 'error',
+                'error': f'Unknown action: {action}'
+            })
     except Exception as fatal_error:
         logging.critical(f"Fatal error in main loop: {fatal_error}")
         try:
-            send_message({'status': 'fatal_error', 'error': str(fatal_error)})
+            send_message({
+                'id': msg.get('id', 'unknown') if 'msg' in dir() else 'unknown',
+                'status': 'fatal_error',
+                'error': str(fatal_error)
+            })
         except Exception:
             pass
         sys.exit(1)
