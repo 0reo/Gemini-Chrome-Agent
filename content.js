@@ -1,10 +1,11 @@
-// Version: 1.3 - Improved Auto-Submit & Event Dispatching
-console.log("Gemini Agent content script loaded!");
+// Version: 2.0 - Robust Deduplication, Validation & Auto-Submit
+console.log("[Gemini Agent] content script loaded!");
 
 let isPageLoading = true;
 let isAgentPaused = false;
 let historyTimeout;
 
+// --- Agent Controls UI ---
 const createControls = () => {
     if (document.getElementById('gemini-agent-controls')) return;
     const container = document.createElement('div');
@@ -14,6 +15,11 @@ const createControls = () => {
     const header = document.createElement('div');
     header.innerHTML = '<b>Agent Control</b>';
     
+    const statusText = document.createElement('div');
+    statusText.id = 'gemini-agent-status';
+    statusText.innerText = 'Status: Active';
+    statusText.style.cssText = 'font-size:11px;color:#aaa;';
+    
     const toggleBtn = document.createElement('button');
     toggleBtn.innerText = 'Pause Agent';
     toggleBtn.style.cssText = 'background:#333;color:white;border:1px solid #444;padding:6px;cursor:pointer;border-radius:6px;width:100%;';
@@ -22,18 +28,19 @@ const createControls = () => {
         isAgentPaused = !isAgentPaused;
         toggleBtn.innerText = isAgentPaused ? 'Resume Agent' : 'Pause Agent';
         toggleBtn.style.borderColor = isAgentPaused ? '#d32f2f' : '#444';
-        console.log("Agent state changed. Paused:", isAgentPaused);
+        statusText.innerText = isAgentPaused ? 'Status: Paused' : 'Status: Active';
+        statusText.style.color = isAgentPaused ? '#d32f2f' : '#aaa';
+        console.log("[Gemini Agent] State changed. Paused:", isAgentPaused);
     };
 
     container.appendChild(header);
+    container.appendChild(statusText);
     container.appendChild(toggleBtn);
     document.body.appendChild(container);
 
     window.addEventListener('keydown', (e) => {
         if (e.altKey && e.shiftKey && e.key === 'K') {
-            isAgentPaused = !isAgentPaused;
-            toggleBtn.innerText = isAgentPaused ? 'Resume Agent' : 'Pause Agent';
-            toggleBtn.style.borderColor = isAgentPaused ? '#d32f2f' : '#444';
+            toggleBtn.click();
         }
     });
 };
@@ -45,87 +52,253 @@ const historyObserver = new MutationObserver(() => {
             isPageLoading = false;
             createControls();
             historyObserver.disconnect();
+            console.log("[Gemini Agent] Page loaded; controls injected.");
         }
     }, 2000);
 });
 historyObserver.observe(document.body, { childList: true, subtree: true });
 
-const recentPayloads = new Set();
+// --- Deduplication System ---
+const processedPayloads = new Map(); // hash -> timestamp
+const PAYLOAD_TTL_MS = 60000; // 60 seconds
+const VALID_ACTIONS = new Set(['run_shell', 'write_file', 'read_file']);
+
+function getPayloadHash(payload) {
+    try {
+        const canonical = JSON.stringify(payload, Object.keys(payload).sort());
+        let hash = 0;
+        for (let i = 0; i < canonical.length; i++) {
+            const char = canonical.charCodeAt(i);
+            hash = ((hash << 5) - hash) + char;
+            hash = hash & hash;
+        }
+        return hash.toString(16);
+    } catch {
+        return String(Math.random());
+    }
+}
+
+function isRecentlyProcessed(payload) {
+    const now = Date.now();
+    const hash = getPayloadHash(payload);
+    
+    // Periodic cleanup of old entries
+    for (const [key, time] of processedPayloads.entries()) {
+        if (now - time > PAYLOAD_TTL_MS) {
+            processedPayloads.delete(key);
+        }
+    }
+    
+    if (processedPayloads.has(hash)) {
+        return true;
+    }
+    
+    processedPayloads.set(hash, now);
+    return false;
+}
+
+function isValidAgentPayload(payload) {
+    if (!payload || typeof payload !== 'object') return false;
+    const action = payload.action;
+    if (!action || !VALID_ACTIONS.has(action)) return false;
+    
+    if (action === 'run_shell' && typeof payload.command !== 'string') return false;
+    if (action === 'write_file' && (typeof payload.filepath !== 'string' || typeof payload.content !== 'string')) return false;
+    if (action === 'read_file' && typeof payload.filepath !== 'string') return false;
+    
+    return true;
+}
+
+// --- Payload Detection ---
 const observer = new MutationObserver(() => {
-    if (isAgentPaused) return;
+    if (isAgentPaused || isPageLoading) return;
 
     document.querySelectorAll('pre code, code').forEach(block => {
-        const text = block.innerText;
-        if (text.includes('"action":')) {
-            try {
-                let payload = JSON.parse(text);
-                let pStr = JSON.stringify(payload);
-                if (block.dataset.processedPayload === pStr || recentPayloads.has(pStr)) return;
-                
-                block.dataset.processedPayload = pStr;
-                recentPayloads.add(pStr);
-                setTimeout(() => recentPayloads.delete(pStr), 15000);
+        const text = block.innerText.trim();
+        if (!text.includes('"action"')) return;
+        
+        try {
+            let payload = JSON.parse(text);
+            if (!isValidAgentPayload(payload)) return;
+            
+            if (isRecentlyProcessed(payload)) return;
 
-                if (!isPageLoading) {
-                    console.log("Executing agent action...");
-                    chrome.runtime.sendMessage({type: "SEND_TO_HOST", payload: payload});
-                }
-            } catch (e) { }
+            console.log("[Gemini Agent] Executing action:", payload.action, payload);
+            chrome.runtime.sendMessage({type: "SEND_TO_HOST", payload: payload});
+        } catch (e) { 
+            // JSON.parse fails while streaming — expected, ignore
         }
     });
 });
 observer.observe(document.body, { childList: true, subtree: true, characterData: true });
 
+// --- Response Injection ---
 chrome.runtime.onMessage.addListener((message) => {
     if (message.type === "HOST_RESPONSE") {
-        // Broad selector for the Gemini input area
-        const promptBox = document.querySelector('rich-textarea [contenteditable="true"], [role="textbox"][contenteditable="true"], .ql-editor'); 
-        
-        if (promptBox && !isAgentPaused) {
-            const outputText = message.data?.output || message.data?.error || "Command completed.";
-            const fullText = `System Result:\n${outputText}`;
-            
-            promptBox.focus();
-            
-            // Step 1: Clear and Insert
-            document.execCommand('selectAll', false, null);
-            document.execCommand('delete', false, null);
-            
-            const dt = new DataTransfer();
-            dt.setData('text/plain', fullText);
-            const pasteEvent = new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true });
-            promptBox.dispatchEvent(pasteEvent);
-            
-            if (promptBox.innerText.length < 5) {
-                document.execCommand('insertText', false, fullText);
-            }
-
-            // Step 2: Force-trigger framework events to enable the Send button
-            ['input', 'change', 'compositionend'].forEach(type => {
-                promptBox.dispatchEvent(new Event(type, { bubbles: true }));
-            });
-
-            // Step 3: Reliable Button Detection and Click
-            let attempts = 0;
-            const clickInterval = setInterval(() => {
-                const sendButton = document.querySelector('button[aria-label*="Send"], button[mattooltip*="Send"], [data-testid="send-button"], .send-button');
-                
-                if (sendButton) {
-                    // Force state update if button is technically disabled by the framework
-                    if (sendButton.disabled) {
-                        promptBox.dispatchEvent(new Event('input', { bubbles: true }));
-                    } else {
-                        clearInterval(clickInterval);
-                        sendButton.click();
-                        console.log("Auto-submitted response.");
-                    }
-                }
-
-                if (++attempts >= 30 || isAgentPaused) {
-                    clearInterval(clickInterval);
-                    if (attempts >= 30) console.warn("Failed to find enabled send button.");
-                }
-            }, 200);
+        if (isAgentPaused) {
+            console.log("[Gemini Agent] Response received but agent is paused; ignoring.");
+            return;
         }
+        injectResponse(message.data);
     }
 });
+
+function injectResponse(data) {
+    const outputText = data?.output || data?.error || data?.message || "Command completed.";
+    const fullText = `System Result:\n${outputText}`;
+    
+    const inputStrategies = [
+        () => {
+            const el = document.querySelector('rich-textarea [contenteditable="true"]');
+            if (el) return injectIntoContentEditable(el, fullText);
+            return false;
+        },
+        () => {
+            const el = document.querySelector('[role="textbox"][contenteditable="true"]');
+            if (el) return injectIntoContentEditable(el, fullText);
+            return false;
+        },
+        () => {
+            const el = document.querySelector('.ql-editor');
+            if (el) return injectIntoContentEditable(el, fullText);
+            return false;
+        },
+        () => {
+            const el = document.querySelector('textarea');
+            if (el) {
+                el.focus();
+                el.value = fullText;
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+                el.dispatchEvent(new Event('change', { bubbles: true }));
+                return true;
+            }
+            return false;
+        }
+    ];
+    
+    let injected = false;
+    for (const strategy of inputStrategies) {
+        try {
+            if (strategy()) {
+                injected = true;
+                break;
+            }
+        } catch (e) {
+            console.warn("[Gemini Agent] Injection strategy failed:", e);
+        }
+    }
+    
+    if (!injected) {
+        console.error("[Gemini Agent] Could not find any injectable input element.");
+        return;
+    }
+    
+    triggerSend();
+}
+
+function injectIntoContentEditable(element, text) {
+    element.focus();
+    
+    // Clear existing content
+    document.execCommand('selectAll', false, null);
+    document.execCommand('delete', false, null);
+    
+    // Strategy A: Clipboard paste event (often triggers React state updates)
+    const dt = new DataTransfer();
+    dt.setData('text/plain', text);
+    const pasteEvent = new ClipboardEvent('paste', { 
+        clipboardData: dt, 
+        bubbles: true, 
+        cancelable: true 
+    });
+    element.dispatchEvent(pasteEvent);
+    
+    // Strategy B: execCommand fallback
+    if (element.innerText.length < 5) {
+        document.execCommand('insertText', false, text);
+    }
+    
+    // Strategy C: Direct property manipulation for stubborn frameworks
+    if (element.innerText.length < 5) {
+        element.innerText = text;
+    }
+    
+    // Dispatch framework lifecycle events
+    ['input', 'change', 'compositionend', 'keyup', 'keydown'].forEach(type => {
+        element.dispatchEvent(new Event(type, { bubbles: true }));
+    });
+    
+    return true;
+}
+
+function triggerSend() {
+    const buttonSelectors = [
+        'button[aria-label="Send message"]',
+        'button[aria-label*="Send"]',
+        'button[mattooltip*="Send"]',
+        'button[data-testid="send-button"]',
+        'button.send-button',
+        'button[aria-label*="send"]',
+    ];
+    
+    let attempts = 0;
+    const maxAttempts = 50; // 10 seconds total
+    
+    const interval = setInterval(() => {
+        if (isAgentPaused) {
+            clearInterval(interval);
+            return;
+        }
+        
+        let sendButton = null;
+        
+        // Selector-based search
+        for (const selector of buttonSelectors) {
+            try {
+                const btn = document.querySelector(selector);
+                if (btn && btn.disabled === false) {
+                    sendButton = btn;
+                    break;
+                }
+            } catch (e) { /* invalid selector */ }
+        }
+        
+        // Text-content fallback
+        if (!sendButton) {
+            sendButton = Array.from(document.querySelectorAll('button')).find(btn => {
+                const text = (btn.innerText || btn.textContent || '').toLowerCase();
+                const aria = (btn.getAttribute('aria-label') || '').toLowerCase();
+                return (text.includes('send') || aria.includes('send')) && !btn.disabled;
+            });
+        }
+        
+        if (sendButton) {
+            clearInterval(interval);
+            sendButton.click();
+            console.log("[Gemini Agent] Auto-submitted response.");
+            return;
+        }
+        
+        // Keep triggering input events to enable the button
+        triggerInputEvents();
+        
+        if (++attempts >= maxAttempts) {
+            clearInterval(interval);
+            console.warn("[Gemini Agent] Failed to find enabled send button after maximum attempts.");
+        }
+    }, 200);
+}
+
+function triggerInputEvents() {
+    const inputs = document.querySelectorAll(
+        'rich-textarea [contenteditable="true"], ' +
+        '[role="textbox"][contenteditable="true"], ' +
+        '.ql-editor, ' +
+        'textarea'
+    );
+    inputs.forEach(el => {
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true }));
+        el.dispatchEvent(new KeyboardEvent('keyup', { key: 'a', bubbles: true }));
+    });
+}
