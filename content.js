@@ -1,7 +1,15 @@
-// Version: 2.1 - Non-blocking debounced payload detection with initial scan
+// Version: 2.2 - Settling period to prevent cascade execution on refresh
 console.log("[Gemini Agent] content script loaded!");
 
 let isAgentPaused = false;
+
+// --- Settling Period ---
+// Gemini renders conversation history lazily. Code blocks may appear in the DOM
+// seconds after the script loads. During the settling period, any detected payload
+// is marked as processed but NOT executed. After this period, only genuinely new
+// payloads (from fresh responses) are executed.
+const PAGE_LOAD_TIME = Date.now();
+const SETTLING_PERIOD_MS = 5000;
 
 // --- Agent Controls UI ---
 const createControls = () => {
@@ -123,6 +131,10 @@ function markExistingBlocks() {
     }
 }
 
+function isSettling() {
+    return (Date.now() - PAGE_LOAD_TIME) < SETTLING_PERIOD_MS;
+}
+
 // --- Debounced Payload Detection ---
 // Scanning the DOM on every mutation causes severe jank while Gemini streams.
 // We debounce so the scan only runs after mutations settle.
@@ -137,6 +149,7 @@ const observer = new MutationObserver(() => {
 
 function scanForPayloads() {
     scanTimeout = null;
+    const settling = isSettling();
     // textContent is orders of magnitude faster than innerText because it
     // does not force a layout recalculation.
     const blocks = document.querySelectorAll('pre code, code');
@@ -148,6 +161,11 @@ function scanForPayloads() {
             let payload = JSON.parse(text);
             if (!isValidAgentPayload(payload)) continue;
             if (isRecentlyProcessed(payload)) continue;
+
+            if (settling) {
+                console.log("[Gemini Agent] Settling: ignored historical payload:", payload.action);
+                continue;
+            }
 
             console.log("[Gemini Agent] Executing action:", payload.action, payload);
             chrome.runtime.sendMessage({type: "SEND_TO_HOST", payload: payload});
