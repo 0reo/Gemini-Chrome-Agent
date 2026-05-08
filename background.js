@@ -1,4 +1,14 @@
 let port = null;
+const LOG_SERVER = "http://localhost:9999";
+
+function logToServer(level, message, data) {
+    try {
+        const payload = JSON.stringify({ level, message, data, ts: Date.now() });
+        fetch(`${LOG_SERVER}/log?m=${encodeURIComponent(payload)}`).catch(() => {});
+    } catch (e) {
+        // Silent fail — don't let logging break the extension
+    }
+}
 
 function connectToHost() {
     console.log("[Background] Connecting to Ubuntu host...");
@@ -6,6 +16,7 @@ function connectToHost() {
     
     port.onMessage.addListener((response) => {
         console.log("[Background] Received from Ubuntu:", response);
+        logToServer("info", "host_response", response);
         
         // Try to route to the exact tab that sent the request.
         // Service workers go inactive and lose in-memory state, so we
@@ -15,6 +26,7 @@ function connectToHost() {
                 chrome.tabs.sendMessage(lastActiveTabId, {type: "HOST_RESPONSE", data: response})
                     .catch(err => {
                         console.warn("[Background] Could not send to the active Gemini tab:", err.message);
+                        logToServer("warn", "tab_send_failed", { error: err.message, tabId: lastActiveTabId });
                         // Fallback: broadcast to any Gemini tab
                         broadcastToGeminiTabs(response);
                     });
@@ -28,6 +40,7 @@ function connectToHost() {
         const error = chrome.runtime.lastError;
         if (error) {
             console.error("[Background] Native host disconnected!", error.message);
+            logToServer("error", "host_disconnect", { error: error.message });
         } else {
             console.log("[Background] Native host disconnected (clean).");
         }
@@ -54,6 +67,7 @@ connectToHost();
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.type === "SEND_TO_HOST") {
         console.log("[Background] Received payload from Gemini tab:", request.payload);
+        logToServer("info", "content_payload", request.payload);
         
         // Persist the sender tab ID so we can route responses back after
         // the service worker wakes up from sleep.
@@ -72,6 +86,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             console.log("[Background] Successfully forwarded to Ubuntu!");
         } catch (e) {
             console.error("[Background] Failed to send message to host:", e);
+            logToServer("error", "post_to_host_failed", { error: e.message });
         }
     }
 });
