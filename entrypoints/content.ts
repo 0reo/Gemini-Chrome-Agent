@@ -1,6 +1,6 @@
 import { CONFIG } from '@/utils/config';
 import { info, warn, error } from '@/utils/logger';
-import { isValidPayload } from '@/utils/protocol';
+import { isValidPayload, generateId } from '@/utils/protocol';
 import { isRecentlyProcessed, markPayloadProcessed } from '@/utils/dedup';
 import { injectResponse, triggerSend } from '@/utils/injection';
 import type { AgentPayload, AgentState, ExtensionMessage } from '@/utils/types';
@@ -142,6 +142,9 @@ export default defineContentScript({
             continue;
           }
 
+          if (!payload.id) {
+            payload.id = generateId();
+          }
           info('Executing action', { action: payload.action, id: payload.id });
           browser.runtime.sendMessage({ type: 'SEND_TO_HOST', payload } as ExtensionMessage);
           setCooldown();
