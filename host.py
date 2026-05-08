@@ -6,6 +6,8 @@ import struct
 import subprocess
 import os
 import logging
+import time
+import tempfile
 
 logging.basicConfig(
     filename='/tmp/gemini_host.log',
@@ -52,9 +54,33 @@ def truncate_output(text, max_bytes=MAX_OUTPUT_SIZE):
     return truncated + f"\n\n[Output truncated: exceeded {max_bytes} bytes]"
 
 
+def respond_success(req_id, meta, output=None, message=None, **kwargs):
+    response = {
+        'id': req_id,
+        'status': 'success',
+        'meta': meta,
+    }
+    if output is not None:
+        response['output'] = output
+    if message is not None:
+        response['message'] = message
+    response.update(kwargs)
+    send_message(response)
+
+
+def respond_error(req_id, meta, error, status='error'):
+    send_message({
+        'id': req_id,
+        'status': status,
+        'error': error,
+        'meta': meta,
+    })
+
+
 def handle_run_shell(msg):
     command = msg.get('command')
     req_id = msg.get('id', 'unknown')
+    start = time.perf_counter()
     logging.info(f"[{req_id}] Executing shell command: {command}")
     try:
         result = subprocess.run(
@@ -73,33 +99,36 @@ def handle_run_shell(msg):
             combined = f"[Command completed with exit code {result.returncode} and no output]"
 
         combined = truncate_output(combined)
-        send_message({
-            'id': req_id,
-            'status': 'success',
-            'output': combined,
-            'code': result.returncode,
-            'meta': {'duration_ms': 0}
-        })
+        duration_ms = round((time.perf_counter() - start) * 1000)
+        respond_success(
+            req_id,
+            {'duration_ms': duration_ms},
+            output=combined,
+            code=result.returncode
+        )
     except subprocess.TimeoutExpired:
+        duration_ms = round((time.perf_counter() - start) * 1000)
         logging.warning(f"[{req_id}] Command timed out")
-        send_message({
-            'id': req_id,
-            'status': 'error',
-            'error': 'Command timed out after 30 seconds.'
-        })
+        respond_error(
+            req_id,
+            {'duration_ms': duration_ms},
+            'Command timed out after 30 seconds.'
+        )
     except Exception as e:
+        duration_ms = round((time.perf_counter() - start) * 1000)
         logging.error(f"[{req_id}] Subprocess error: {e}")
-        send_message({
-            'id': req_id,
-            'status': 'error',
-            'error': f'Subprocess Exception: {str(e)}'
-        })
+        respond_error(
+            req_id,
+            {'duration_ms': duration_ms},
+            f'Subprocess Exception: {str(e)}'
+        )
 
 
 def handle_write_file(msg):
     filepath = os.path.expanduser(msg.get('filepath'))
     content = msg.get('content')
     req_id = msg.get('id', 'unknown')
+    start = time.perf_counter()
     logging.info(f"[{req_id}] Writing file: {filepath}")
     try:
         directory = os.path.dirname(filepath)
@@ -107,52 +136,59 @@ def handle_write_file(msg):
             os.makedirs(directory, exist_ok=True)
         with open(filepath, 'w', encoding='utf-8') as f:
             f.write(content)
-        send_message({
-            'id': req_id,
-            'status': 'success',
-            'message': f'File {filepath} written successfully.'
-        })
+        duration_ms = round((time.perf_counter() - start) * 1000)
+        respond_success(
+            req_id,
+            {'duration_ms': duration_ms},
+            message=f'File {filepath} written successfully.'
+        )
     except Exception as e:
+        duration_ms = round((time.perf_counter() - start) * 1000)
         logging.error(f"[{req_id}] File write error: {e}")
-        send_message({
-            'id': req_id,
-            'status': 'error',
-            'error': f'File write error: {str(e)}'
-        })
+        respond_error(
+            req_id,
+            {'duration_ms': duration_ms},
+            f'File write error: {str(e)}'
+        )
 
 
 def handle_read_file(msg):
     filepath = os.path.expanduser(msg.get('filepath'))
     req_id = msg.get('id', 'unknown')
+    start = time.perf_counter()
     logging.info(f"[{req_id}] Reading file: {filepath}")
     try:
         if os.path.exists(filepath):
             with open(filepath, 'r', encoding='utf-8') as f:
                 content = f.read()
             content = truncate_output(content)
-            send_message({
-                'id': req_id,
-                'status': 'success',
-                'output': content
-            })
+            duration_ms = round((time.perf_counter() - start) * 1000)
+            respond_success(
+                req_id,
+                {'duration_ms': duration_ms},
+                output=content
+            )
         else:
-            send_message({
-                'id': req_id,
-                'status': 'error',
-                'error': f'File not found: {filepath}'
-            })
+            duration_ms = round((time.perf_counter() - start) * 1000)
+            respond_error(
+                req_id,
+                {'duration_ms': duration_ms},
+                f'File not found: {filepath}'
+            )
     except Exception as e:
+        duration_ms = round((time.perf_counter() - start) * 1000)
         logging.error(f"[{req_id}] File read error: {e}")
-        send_message({
-            'id': req_id,
-            'status': 'error',
-            'error': f'File read error: {str(e)}'
-        })
+        respond_error(
+            req_id,
+            {'duration_ms': duration_ms},
+            f'File read error: {str(e)}'
+        )
 
 
 def handle_list_files(msg):
     filepath = os.path.expanduser(msg.get('filepath'))
     req_id = msg.get('id', 'unknown')
+    start = time.perf_counter()
     logging.info(f"[{req_id}] Listing files: {filepath}")
     try:
         if os.path.isdir(filepath):
@@ -162,17 +198,176 @@ def handle_list_files(msg):
             output = f"{filepath} is a file, not a directory."
         else:
             output = f"Path not found: {filepath}"
-        send_message({
-            'id': req_id,
-            'status': 'success',
-            'output': output
-        })
+        duration_ms = round((time.perf_counter() - start) * 1000)
+        respond_success(
+            req_id,
+            {'duration_ms': duration_ms},
+            output=output
+        )
     except Exception as e:
-        send_message({
-            'id': req_id,
-            'status': 'error',
-            'error': f'List error: {str(e)}'
-        })
+        duration_ms = round((time.perf_counter() - start) * 1000)
+        respond_error(
+            req_id,
+            {'duration_ms': duration_ms},
+            f'List error: {str(e)}'
+        )
+
+
+def handle_git_status(msg):
+    directory = os.path.expanduser(msg.get('filepath', '.'))
+    req_id = msg.get('id', 'unknown')
+    start = time.perf_counter()
+    logging.info(f"[{req_id}] Git status in: {directory}")
+    try:
+        result = subprocess.run(
+            ['git', 'status'],
+            cwd=directory,
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        output = result.stdout or ""
+        if result.stderr:
+            output += f"\n--- Standard Error ---\n{result.stderr}"
+        if not output.strip():
+            output = f"[Command completed with exit code {result.returncode} and no output]"
+        output = truncate_output(output)
+        duration_ms = round((time.perf_counter() - start) * 1000)
+        respond_success(
+            req_id,
+            {'duration_ms': duration_ms},
+            output=output,
+            code=result.returncode
+        )
+    except subprocess.TimeoutExpired:
+        duration_ms = round((time.perf_counter() - start) * 1000)
+        logging.warning(f"[{req_id}] Git status timed out")
+        respond_error(
+            req_id,
+            {'duration_ms': duration_ms},
+            'Git status timed out after 30 seconds.'
+        )
+    except Exception as e:
+        duration_ms = round((time.perf_counter() - start) * 1000)
+        logging.error(f"[{req_id}] Git status error: {e}")
+        respond_error(
+            req_id,
+            {'duration_ms': duration_ms},
+            f'Git status error: {str(e)}'
+        )
+
+
+def handle_git_diff(msg):
+    directory = os.path.expanduser(msg.get('filepath', '.'))
+    req_id = msg.get('id', 'unknown')
+    start = time.perf_counter()
+    logging.info(f"[{req_id}] Git diff in: {directory}")
+    try:
+        result = subprocess.run(
+            ['git', 'diff'],
+            cwd=directory,
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        output = result.stdout or ""
+        if result.stderr:
+            output += f"\n--- Standard Error ---\n{result.stderr}"
+        if not output.strip():
+            output = f"[Command completed with exit code {result.returncode} and no output]"
+        output = truncate_output(output)
+        duration_ms = round((time.perf_counter() - start) * 1000)
+        respond_success(
+            req_id,
+            {'duration_ms': duration_ms},
+            output=output,
+            code=result.returncode
+        )
+    except subprocess.TimeoutExpired:
+        duration_ms = round((time.perf_counter() - start) * 1000)
+        logging.warning(f"[{req_id}] Git diff timed out")
+        respond_error(
+            req_id,
+            {'duration_ms': duration_ms},
+            'Git diff timed out after 30 seconds.'
+        )
+    except Exception as e:
+        duration_ms = round((time.perf_counter() - start) * 1000)
+        logging.error(f"[{req_id}] Git diff error: {e}")
+        respond_error(
+            req_id,
+            {'duration_ms': duration_ms},
+            f'Git diff error: {str(e)}'
+        )
+
+
+def handle_run_python(msg):
+    req_id = msg.get('id', 'unknown')
+    start = time.perf_counter()
+    filepath = msg.get('filepath')
+    content = msg.get('content')
+    logging.info(f"[{req_id}] Running Python code")
+
+    script_path = None
+    temp_file = None
+    try:
+        if content is not None:
+            temp_file = tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False, encoding='utf-8')
+            temp_file.write(content)
+            temp_file.close()
+            script_path = temp_file.name
+        elif filepath is not None:
+            script_path = os.path.expanduser(filepath)
+        else:
+            duration_ms = round((time.perf_counter() - start) * 1000)
+            respond_error(
+                req_id,
+                {'duration_ms': duration_ms},
+                'Either filepath or content must be provided for run_python.'
+            )
+            return
+
+        result = subprocess.run(
+            [sys.executable, script_path],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        output = result.stdout or ""
+        if result.stderr:
+            output += f"\n--- Standard Error ---\n{result.stderr}"
+        if not output.strip():
+            output = f"[Command completed with exit code {result.returncode} and no output]"
+        output = truncate_output(output)
+        duration_ms = round((time.perf_counter() - start) * 1000)
+        respond_success(
+            req_id,
+            {'duration_ms': duration_ms},
+            output=output,
+            code=result.returncode
+        )
+    except subprocess.TimeoutExpired:
+        duration_ms = round((time.perf_counter() - start) * 1000)
+        logging.warning(f"[{req_id}] Python execution timed out")
+        respond_error(
+            req_id,
+            {'duration_ms': duration_ms},
+            'Python execution timed out after 30 seconds.'
+        )
+    except Exception as e:
+        duration_ms = round((time.perf_counter() - start) * 1000)
+        logging.error(f"[{req_id}] Python execution error: {e}")
+        respond_error(
+            req_id,
+            {'duration_ms': duration_ms},
+            f'Python execution error: {str(e)}'
+        )
+    finally:
+        if temp_file is not None:
+            try:
+                os.unlink(temp_file.name)
+            except Exception:
+                pass
 
 
 logging.info("Gemini Host v2 Started")
@@ -191,21 +386,28 @@ while True:
             handle_read_file(msg)
         elif action == 'list_files':
             handle_list_files(msg)
+        elif action == 'git_status':
+            handle_git_status(msg)
+        elif action == 'git_diff':
+            handle_git_diff(msg)
+        elif action == 'run_python':
+            handle_run_python(msg)
         else:
             logging.warning(f"[{req_id}] Unknown action: {action}")
-            send_message({
-                'id': req_id,
-                'status': 'error',
-                'error': f'Unknown action: {action}'
-            })
+            respond_error(
+                req_id,
+                {'duration_ms': 0},
+                f'Unknown action: {action}'
+            )
     except Exception as fatal_error:
         logging.critical(f"Fatal error in main loop: {fatal_error}")
         try:
-            send_message({
-                'id': msg.get('id', 'unknown') if 'msg' in dir() else 'unknown',
-                'status': 'fatal_error',
-                'error': str(fatal_error)
-            })
+            respond_error(
+                msg.get('id', 'unknown') if 'msg' in dir() else 'unknown',
+                {'duration_ms': 0},
+                str(fatal_error),
+                status='fatal_error'
+            )
         except Exception:
             pass
         sys.exit(1)
