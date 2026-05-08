@@ -1,48 +1,86 @@
 let port = null;
-let lastActiveTabId = null; // We will store the exact tab that sent the request
 
 function connectToHost() {
-    console.log("Connecting to Ubuntu host...");
+    console.log("[Background] Connecting to Ubuntu host...");
     port = chrome.runtime.connectNative('com.local.gemini_agent');
     
     port.onMessage.addListener((response) => {
-        console.log("Received from Ubuntu:", response);
+        console.log("[Background] Received from Ubuntu:", response);
         
-        // Send the response back to the EXACT tab that requested it
-        if (lastActiveTabId) {
-            chrome.tabs.sendMessage(lastActiveTabId, {type: "HOST_RESPONSE", data: response})
-                .catch(err => console.warn("Could not send to the active Gemini tab", err));
-        } else {
-            console.warn("No active tab ID saved to route the response to.");
-        }
+        // Try to route to the exact tab that sent the request.
+        // Service workers go inactive and lose in-memory state, so we
+        // persist the tab ID in session storage.
+        chrome.storage.session.get('lastActiveTabId').then(({ lastActiveTabId }) => {
+            if (lastActiveTabId) {
+                chrome.tabs.sendMessage(lastActiveTabId, {type: "HOST_RESPONSE", data: response})
+                    .catch(err => {
+                        console.warn("[Background] Could not send to the active Gemini tab:", err.message);
+                        // Fallback: broadcast to any Gemini tab
+                        broadcastToGeminiTabs(response);
+                    });
+            } else {
+                broadcastToGeminiTabs(response);
+            }
+        });
     });
 
     port.onDisconnect.addListener(() => {
-        console.error("Native host disconnected!", chrome.runtime.lastError);
+        const error = chrome.runtime.lastError;
+        if (error) {
+            console.error("[Background] Native host disconnected!", error.message);
+        } else {
+            console.log("[Background] Native host disconnected (clean).");
+        }
         port = null;
     });
 }
 
+function broadcastToGeminiTabs(response) {
+    chrome.tabs.query({url: "*://gemini.google.com/*"}, function(tabs) {
+        if (tabs && tabs.length > 0) {
+            // Send to the most recently active Gemini tab
+            const targetTab = tabs[tabs.length - 1];
+            chrome.tabs.sendMessage(targetTab.id, {type: "HOST_RESPONSE", data: response})
+                .catch(err => console.warn("[Background] Could not send to fallback Gemini tab:", err.message));
+        } else {
+            console.warn("[Background] No Gemini tab found to route the response to.");
+        }
+    });
+}
+
+// Connect immediately when the service worker starts
 connectToHost();
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.type === "SEND_TO_HOST") {
-        console.log("Received payload from Gemini tab:", request.payload);
+        console.log("[Background] Received payload from Gemini tab:", request.payload);
         
-        // Save the exact Tab ID of the tab making the request
+        // Persist the sender tab ID so we can route responses back after
+        // the service worker wakes up from sleep.
         if (sender.tab && sender.tab.id) {
-            lastActiveTabId = sender.tab.id;
+            chrome.storage.session.set({ lastActiveTabId: sender.tab.id })
+                .catch(err => console.warn("[Background] Failed to save tab ID:", err));
         }
         
         if (!port) {
+            console.log("[Background] Native port missing; reconnecting...");
             connectToHost();
         }
         
         try {
             port.postMessage(request.payload);
-            console.log("Successfully forwarded to Ubuntu!");
+            console.log("[Background] Successfully forwarded to Ubuntu!");
         } catch (e) {
-            console.error("Failed to send message to host:", e);
+            console.error("[Background] Failed to send message to host:", e);
         }
     }
+});
+
+// Keep the service worker alive while Native Messaging is active.
+// Manifest V3 service workers can sleep after ~30s of inactivity,
+// which kills the native messaging port.
+chrome.runtime.onConnect.addListener((externalPort) => {
+    externalPort.onDisconnect.addListener(() => {
+        console.log("[Background] External port disconnected.");
+    });
 });
