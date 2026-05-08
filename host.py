@@ -203,8 +203,7 @@ def handle_list_files(msg):
         respond_success(
             req_id,
             {'duration_ms': duration_ms},
-            output=output,
-            code=result.returncode
+            output=output
         )
     except Exception as e:
         duration_ms = round((time.perf_counter() - start) * 1000)
@@ -323,7 +322,8 @@ def handle_run_python(msg):
         respond_success(
             req_id,
             {'duration_ms': duration_ms},
-            output=output
+            output=output,
+            code=result.returncode
         )
     except subprocess.TimeoutExpired:
         duration_ms = round((time.perf_counter() - start) * 1000)
