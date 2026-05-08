@@ -1,9 +1,7 @@
-// Version: 2.0 - Robust Deduplication, Validation & Auto-Submit
+// Version: 2.1 - Non-blocking debounced payload detection with initial scan
 console.log("[Gemini Agent] content script loaded!");
 
-let isPageLoading = true;
 let isAgentPaused = false;
-let historyTimeout;
 
 // --- Agent Controls UI ---
 const createControls = () => {
@@ -45,18 +43,7 @@ const createControls = () => {
     });
 };
 
-const historyObserver = new MutationObserver(() => {
-    clearTimeout(historyTimeout);
-    historyTimeout = setTimeout(() => {
-        if (isPageLoading) {
-            isPageLoading = false;
-            createControls();
-            historyObserver.disconnect();
-            console.log("[Gemini Agent] Page loaded; controls injected.");
-        }
-    }, 2000);
-});
-historyObserver.observe(document.body, { childList: true, subtree: true });
+createControls();
 
 // --- Deduplication System ---
 const processedPayloads = new Map(); // hash -> timestamp
@@ -114,6 +101,28 @@ function isValidAgentPayload(payload) {
     return true;
 }
 
+// --- Mark existing blocks on load (prevents re-execution on refresh) ---
+function markExistingBlocks() {
+    const blocks = document.querySelectorAll('pre code, code');
+    let marked = 0;
+    for (const block of blocks) {
+        const text = block.textContent;
+        if (!text.includes('"action"')) continue;
+        try {
+            const payload = JSON.parse(text);
+            if (isValidAgentPayload(payload)) {
+                isRecentlyProcessed(payload);
+                marked++;
+            }
+        } catch (e) {
+            // Not valid JSON yet or not an agent payload
+        }
+    }
+    if (marked > 0) {
+        console.log(`[Gemini Agent] Marked ${marked} existing payload(s) as processed.`);
+    }
+}
+
 // --- Debounced Payload Detection ---
 // Scanning the DOM on every mutation causes severe jank while Gemini streams.
 // We debounce so the scan only runs after mutations settle.
@@ -121,11 +130,10 @@ let scanTimeout = null;
 const SCAN_DEBOUNCE_MS = 250;
 
 const observer = new MutationObserver(() => {
-    if (isAgentPaused || isPageLoading) return;
+    if (isAgentPaused) return;
     if (scanTimeout) clearTimeout(scanTimeout);
     scanTimeout = setTimeout(scanForPayloads, SCAN_DEBOUNCE_MS);
 });
-observer.observe(document.body, { childList: true, subtree: true, characterData: true });
 
 function scanForPayloads() {
     scanTimeout = null;
@@ -148,6 +156,10 @@ function scanForPayloads() {
         }
     }
 }
+
+// Mark existing blocks BEFORE observing, then watch for new ones
+markExistingBlocks();
+observer.observe(document.body, { childList: true, subtree: true, characterData: true });
 
 // --- Response Injection ---
 chrome.runtime.onMessage.addListener((message) => {
