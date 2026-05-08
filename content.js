@@ -61,6 +61,8 @@ historyObserver.observe(document.body, { childList: true, subtree: true });
 // --- Deduplication System ---
 const processedPayloads = new Map(); // hash -> timestamp
 const PAYLOAD_TTL_MS = 60000; // 60 seconds
+const CLEANUP_INTERVAL_MS = 5000; // only clean stale entries every 5s
+let lastCleanup = 0;
 const VALID_ACTIONS = new Set(['run_shell', 'write_file', 'read_file']);
 
 function getPayloadHash(payload) {
@@ -82,10 +84,13 @@ function isRecentlyProcessed(payload) {
     const now = Date.now();
     const hash = getPayloadHash(payload);
     
-    // Periodic cleanup of old entries
-    for (const [key, time] of processedPayloads.entries()) {
-        if (now - time > PAYLOAD_TTL_MS) {
-            processedPayloads.delete(key);
+    // Periodic cleanup of old entries (throttled to avoid iterating every scan)
+    if (now - lastCleanup > CLEANUP_INTERVAL_MS) {
+        lastCleanup = now;
+        for (const [key, time] of processedPayloads.entries()) {
+            if (now - time > PAYLOAD_TTL_MS) {
+                processedPayloads.delete(key);
+            }
         }
     }
     
@@ -109,28 +114,40 @@ function isValidAgentPayload(payload) {
     return true;
 }
 
-// --- Payload Detection ---
+// --- Debounced Payload Detection ---
+// Scanning the DOM on every mutation causes severe jank while Gemini streams.
+// We debounce so the scan only runs after mutations settle.
+let scanTimeout = null;
+const SCAN_DEBOUNCE_MS = 250;
+
 const observer = new MutationObserver(() => {
     if (isAgentPaused || isPageLoading) return;
+    if (scanTimeout) clearTimeout(scanTimeout);
+    scanTimeout = setTimeout(scanForPayloads, SCAN_DEBOUNCE_MS);
+});
+observer.observe(document.body, { childList: true, subtree: true, characterData: true });
 
-    document.querySelectorAll('pre code, code').forEach(block => {
-        const text = block.innerText.trim();
-        if (!text.includes('"action"')) return;
+function scanForPayloads() {
+    scanTimeout = null;
+    // textContent is orders of magnitude faster than innerText because it
+    // does not force a layout recalculation.
+    const blocks = document.querySelectorAll('pre code, code');
+    for (const block of blocks) {
+        const text = block.textContent;
+        if (!text.includes('"action"')) continue;
         
         try {
             let payload = JSON.parse(text);
-            if (!isValidAgentPayload(payload)) return;
-            
-            if (isRecentlyProcessed(payload)) return;
+            if (!isValidAgentPayload(payload)) continue;
+            if (isRecentlyProcessed(payload)) continue;
 
             console.log("[Gemini Agent] Executing action:", payload.action, payload);
             chrome.runtime.sendMessage({type: "SEND_TO_HOST", payload: payload});
         } catch (e) { 
             // JSON.parse fails while streaming — expected, ignore
         }
-    });
-});
-observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+    }
+}
 
 // --- Response Injection ---
 chrome.runtime.onMessage.addListener((message) => {
