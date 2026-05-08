@@ -32,3 +32,4 @@ __pycache__/
 
 # Test coverage
 coverage/
+.playwright-mcp/

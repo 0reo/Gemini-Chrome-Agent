@@ -318,3 +318,65 @@ class TestNewBehavior(unittest.TestCase):
     def test_negative_length(self):
         # ...
 ```
+
+---
+
+## How to Run Browser E2E Tests
+
+`test/e2e_browser.py` connects to a real Chromium/Chrome instance via the Chrome DevTools Protocol (CDP) to verify the full extension pipeline in a live browser.
+
+### Prerequisites
+
+```bash
+pip install websocket-client
+```
+
+### Launch a test browser with the extension
+
+```bash
+# Use Playwright's cached Chromium or your system Chrome
+CHROME="$HOME/.cache/ms-playwright/chromium-1222/chrome-linux64/chrome"
+# Or: CHROME="/usr/bin/google-chrome"
+
+xvfb-run -a --server-args="-screen 0 1280x720x24" \
+  "$CHROME" \
+    --remote-debugging-port=9223 \
+    --remote-allow-origins='*' \
+    --load-extension="/path/to/project/.output/chrome-mv3" \
+    --user-data-dir=/tmp/gla-test-profile \
+    --no-first-run \
+    --no-sandbox \
+    --disable-setuid-sandbox \
+    https://gemini.google.com
+```
+
+> **Why `xvfb-run`?** On a headless Linux server, Chrome needs a virtual display. On a desktop with a real display, you can omit `xvfb-run`.
+
+> **Why `--remote-allow-origins='*'`?** Chrome blocks WebSocket CDP connections from unknown origins by default. This flag allows the test script to connect.
+
+### Run the test
+
+```bash
+python3 test/e2e_browser.py
+# Or with a custom CDP port:
+python3 test/e2e_browser.py 9224
+```
+
+### What is covered
+
+| Check | Description |
+|-------|-------------|
+| Service worker load | Extension background script registers correctly |
+| `chrome.runtime.connectNative` | Native Messaging API is available |
+| `chrome.runtime.onMessage` | Message passing API is available |
+| Content script injection | Content script loads on `gemini.google.com` |
+| State machine | Transitions from `settling` → `paused` correctly |
+| Storage sync | Reads `paused` state from `chrome.storage.local` |
+
+### Interpreting results
+
+- **PASS** — The extension is fully functional in the browser.
+- **FAIL: Cannot connect to CDP** — Browser not running with `--remote-debugging-port=9223` or wrong port.
+- **FAIL: Extension service worker not found** — Extension not loaded; verify `--load-extension` path.
+- **FAIL: content_script_loaded / state_transition / storage_sync** — Content script has a runtime error; check the browser console for stack traces.
+- **FAIL: background.connectNative** — Manifest issue or browser restriction on `nativeMessaging` permission.

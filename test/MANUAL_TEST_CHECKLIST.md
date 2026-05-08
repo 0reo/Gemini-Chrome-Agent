@@ -2,6 +2,21 @@
 
 Use this checklist when verifying the Gemini Chrome Agent on the real Gemini web app.
 
+> **Tip:** Run the automated browser E2E test first to catch basic issues:
+> ```bash
+> # 1. Launch a test browser with the extension loaded
+> chromium --remote-debugging-port=9223 --remote-allow-origins='*' \
+>   --load-extension=.output/chrome-mv3 \
+>   --user-data-dir=/tmp/gla-test-profile \
+>   --no-first-run --no-sandbox \
+>   https://gemini.google.com
+>
+> # 2. Run the automated test (in another terminal)
+> python3 test/e2e_browser.py
+> ```
+> This validates: service worker load, content script injection, state machine,
+> storage sync, and `chrome.runtime.connectNative` availability.
+
 ## Prerequisites
 
 - [ ] Extension built: `npm run build` completed successfully

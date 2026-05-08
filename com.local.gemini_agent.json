@@ -4,6 +4,6 @@
   "path": "/home/oreo/Development/Gemini-Chrome-Agent/host.py",
   "type": "stdio",
   "allowed_origins": [
-    "chrome-extension://okgmnmmljngiefphgcpeojoccnpckcin/"
+    "chrome-extension://pggfgfolmomlhlnabkfboiiojdkhapoh/"
   ]
 }
