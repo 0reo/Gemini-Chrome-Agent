@@ -15,6 +15,28 @@ export default defineContentScript({
     let scanTimeout: number | null = null;
     const pageLoadTime = Date.now();
 
+    // Dynamic settings (overridable via storage)
+    let cooldownMs: number = CONFIG.COOLDOWN_MS;
+    let maxPerMinute: number = CONFIG.MAX_PER_MINUTE;
+    let settlingPeriodMs: number = CONFIG.SETTLING_PERIOD_MS;
+
+    async function loadSettings(): Promise<void> {
+      try {
+        const result = await browser.storage.local.get(['cooldownSeconds', 'maxPerMinute', 'settlingSeconds']);
+        if (typeof result.cooldownSeconds === 'number') {
+          cooldownMs = result.cooldownSeconds * 1000;
+        }
+        if (typeof result.maxPerMinute === 'number') {
+          maxPerMinute = result.maxPerMinute;
+        }
+        if (typeof result.settlingSeconds === 'number') {
+          settlingPeriodMs = result.settlingSeconds * 1000;
+        }
+      } catch {
+        // Fallback to CONFIG defaults already set
+      }
+    }
+
     // --- State Machine ---
     function setState(newState: AgentState): void {
       info(`State transition: ${state} → ${newState}`);
@@ -22,7 +44,7 @@ export default defineContentScript({
     }
 
     function isSettling(): boolean {
-      return state === 'settling' && Date.now() - pageLoadTime < CONFIG.SETTLING_PERIOD_MS;
+      return state === 'settling' && Date.now() - pageLoadTime < settlingPeriodMs;
     }
 
     function isArmed(): boolean {
@@ -39,7 +61,7 @@ export default defineContentScript({
       cooldownTimer = window.setTimeout(() => {
         setState('armed');
         info('Cooldown ended');
-      }, CONFIG.COOLDOWN_MS);
+      }, cooldownMs);
     }
 
     function trackExecution(): void {
@@ -50,27 +72,31 @@ export default defineContentScript({
           minuteTimer = null;
         }, 60000);
       }
-      if (executionsThisMinute >= CONFIG.MAX_PER_MINUTE) {
-        warn(`Rate limit hit (${CONFIG.MAX_PER_MINUTE}/min). Auto-pausing.`);
+      if (executionsThisMinute >= maxPerMinute) {
+        warn(`Rate limit hit (${maxPerMinute}/min). Auto-pausing.`);
         setState('paused');
         browser.storage.local.set({ isAgentPaused: true }).catch(() => {});
       }
     }
 
-    // --- Sync pause state from storage ---
-    browser.storage.local.get('isAgentPaused').then(({ isAgentPaused }) => {
-      const paused = isAgentPaused !== false; // default to paused
-      if (paused) {
-        setState('paused');
-      } else {
-        setState('settling');
-        window.setTimeout(() => setState('armed'), CONFIG.SETTLING_PERIOD_MS);
-      }
-      info('Initial pause state synced', { paused });
+    // --- Init settings & pause state ---
+    loadSettings().then(() => {
+      browser.storage.local.get('isAgentPaused').then(({ isAgentPaused }) => {
+        const paused = isAgentPaused !== false; // default to paused
+        if (paused) {
+          setState('paused');
+        } else {
+          setState('settling');
+          window.setTimeout(() => setState('armed'), settlingPeriodMs);
+        }
+        info('Initial pause state synced', { paused });
+      });
     });
 
     browser.storage.onChanged.addListener((changes, area) => {
-      if (area === 'local' && changes.isAgentPaused) {
+      if (area !== 'local') return;
+
+      if (changes.isAgentPaused) {
         const paused = changes.isAgentPaused.newValue !== false;
         if (paused) {
           setState('paused');
@@ -82,6 +108,30 @@ export default defineContentScript({
           }
         }
         info('Pause state synced via storage', { paused });
+      }
+
+      if (changes.cooldownSeconds) {
+        const val = changes.cooldownSeconds.newValue;
+        if (typeof val === 'number') {
+          cooldownMs = val * 1000;
+          info('Cooldown setting updated', { seconds: val });
+        }
+      }
+
+      if (changes.maxPerMinute) {
+        const val = changes.maxPerMinute.newValue;
+        if (typeof val === 'number') {
+          maxPerMinute = val;
+          info('Rate limit setting updated', { maxPerMinute: val });
+        }
+      }
+
+      if (changes.settlingSeconds) {
+        const val = changes.settlingSeconds.newValue;
+        if (typeof val === 'number') {
+          settlingPeriodMs = val * 1000;
+          info('Settling period setting updated', { seconds: val });
+        }
       }
     });
 

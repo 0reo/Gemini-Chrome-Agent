@@ -3,7 +3,7 @@ body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   background: #1e1e1e;
   color: #fff;
-  width: 220px;
+  width: 280px;
 }
 
 .container {
@@ -91,4 +91,148 @@ h1 {
   font-size: 11px;
   color: #888;
   text-align: center;
+}
+
+.settings-section {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid #333;
+}
+
+.setting-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  cursor: default;
+}
+
+.setting-label {
+  font-size: 12px;
+  color: #ccc;
+  width: 60px;
+  flex-shrink: 0;
+}
+
+.setting-row input[type='range'] {
+  flex: 1;
+  accent-color: #388e3c;
+}
+
+.setting-value {
+  font-size: 12px;
+  color: #aaa;
+  width: 44px;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.secondary-btn {
+  width: 100%;
+  padding: 10px;
+  border: none;
+  border-radius: 8px;
+  background: #2d2d2d;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.2s;
+  margin-top: 4px;
+}
+
+.secondary-btn:hover {
+  background: #3a3a3a;
+}
+
+.secondary-btn:active {
+  background: #444;
+}
+
+.status-msg {
+  margin-top: 6px;
+  font-size: 11px;
+  text-align: center;
+  min-height: 14px;
+}
+
+.status-msg.success {
+  color: #81c784;
+}
+
+.status-msg.warn {
+  color: #ffb74d;
+}
+
+.advanced-toggle {
+  width: 100%;
+  padding: 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: #888;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color 0.2s;
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.advanced-toggle:hover {
+  color: #bbb;
+}
+
+.advanced-toggle .chevron {
+  display: inline-block;
+  transition: transform 0.25s ease;
+  font-size: 10px;
+}
+
+.advanced-toggle.open .chevron {
+  transform: rotate(180deg);
+}
+
+.advanced-panel {
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height 0.3s ease, opacity 0.25s ease;
+  opacity: 0;
+}
+
+.advanced-panel.open {
+  max-height: 200px;
+  opacity: 1;
+}
+
+.advanced-panel .setting-row {
+  margin-bottom: 10px;
+}
+
+.advanced-panel .setting-row:last-of-type {
+  margin-bottom: 12px;
+}
+
+.danger-btn {
+  width: 100%;
+  padding: 10px;
+  border: none;
+  border-radius: 8px;
+  background: #4a1515;
+  color: #ffcdd2;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.danger-btn:hover {
+  background: #5c1a1a;
+}
+
+.danger-btn:active {
+  background: #6e2020;
 }
