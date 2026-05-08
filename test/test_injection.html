@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Injection Strategy Testbed</title>
+  <style>
+    :root {
+      --bg: #1a1a2e;
+      --surface: #16213e;
+      --accent: #0f3460;
+      --highlight: #e94560;
+      --text: #eee;
+      --muted: #aaa;
+      --success: #4ecca3;
+      --code-bg: #0d1117;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      padding: 1.5rem;
+      max-width: 1200px;
+      margin-inline: auto;
+    }
+    h1 { margin: 0 0 0.5rem; font-size: 1.25rem; }
+    p.desc { margin: 0 0 1.25rem; color: var(--muted); font-size: 0.9rem; }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 1rem;
+    }
+    .card {
+      background: var(--surface);
+      border: 1px solid #2a2a4a;
+      border-radius: 10px;
+      padding: 1rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.6rem;
+    }
+    .card h3 { margin: 0; font-size: 1rem; }
+    .card .tag {
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--muted);
+    }
+
+    textarea, [contenteditable] {
+      min-height: 100px;
+      background: var(--code-bg);
+      color: var(--text);
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      padding: 0.6rem;
+      font: inherit;
+      outline: none;
+    }
+    textarea { resize: vertical; }
+
+    .rich-textarea {
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      padding: 0.6rem;
+      background: var(--code-bg);
+    }
+    .rich-textarea [contenteditable] {
+      border: none;
+      padding: 0;
+      min-height: 80px;
+      background: transparent;
+    }
+
+    .btn-row { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+    button {
+      cursor: pointer;
+      padding: 0.4rem 0.7rem;
+      border-radius: 6px;
+      border: 1px solid var(--accent);
+      background: var(--accent);
+      color: var(--text);
+      font: inherit;
+      font-size: 0.85rem;
+      font-weight: 600;
+    }
+    button:hover { filter: brightness(1.15); }
+    button.ghost { background: transparent; border-color: var(--highlight); color: var(--highlight); }
+
+    #display-area {
+      margin-top: 1.5rem;
+      background: #0b0c15;
+      border: 1px solid #2a2a4a;
+      border-radius: 10px;
+      padding: 1rem;
+    }
+    #display-area h2 { margin: 0 0 0.5rem; font-size: 1rem; }
+    #injected-text {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 0.85rem;
+      white-space: pre-wrap;
+      background: var(--code-bg);
+      padding: 0.75rem;
+      border-radius: 8px;
+      min-height: 80px;
+      color: #c9d1d9;
+    }
+    .meta { color: var(--muted); font-size: 0.8rem; margin-top: 0.4rem; }
+  </style>
+</head>
+<body>
+  <h1>Injection Strategy Testbed</h1>
+  <p class="desc">
+    Test the three injection strategies against three input types.
+    Each strategy is inlined from <code>utils/injection.ts</code>.
+  </p>
+
+  <div class="grid">
+    <!-- 1. Plain textarea -->
+    <div class="card">
+      <div class="tag">Input Type</div>
+      <h3>&lt;textarea&gt;</h3>
+      <textarea id="input-textarea" placeholder="Type something here…"></textarea>
+      <div class="btn-row">
+        <button onclick="testStrategy('textarea', 'textarea')">injectIntoTextarea</button>
+        <button class="ghost" onclick="clearInput('input-textarea')">Clear</button>
+      </div>
+    </div>
+
+    <!-- 2. Simple contenteditable -->
+    <div class="card">
+      <div class="tag">Input Type</div>
+      <h3>[contenteditable="true"] div</h3>
+      <div id="input-contenteditable" contenteditable="true" placeholder="Type something here…"></div>
+      <div class="btn-row">
+        <button onclick="testStrategy('contenteditable', 'contenteditable')">injectIntoContentEditable</button>
+        <button class="ghost" onclick="clearInput('input-contenteditable')">Clear</button>
+      </div>
+    </div>
+
+    <!-- 3. Rich textarea (nested contenteditable) -->
+    <div class="card">
+      <div class="tag">Input Type</div>
+      <h3>rich-textarea &gt; [contenteditable="true"]</h3>
+      <div class="rich-textarea">
+        <div id="input-rich" contenteditable="true" placeholder="Type something here…"></div>
+      </div>
+      <div class="btn-row">
+        <button onclick="testStrategy('rich', 'contenteditable')">injectIntoContentEditable</button>
+        <button class="ghost" onclick="clearInput('input-rich')">Clear</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Global actions -->
+  <div class="card" style="margin-top:1rem;">
+    <div class="btn-row">
+      <button onclick="testStrategy('auto', 'auto')">Run auto-detect (all strategies)</button>
+      <button class="ghost" onclick="clearAll()">Clear all inputs</button>
+    </div>
+  </div>
+
+  <div id="display-area">
+    <h2>Last Injected Text</h2>
+    <div id="injected-text">(nothing yet)</div>
+    <div class="meta" id="injected-meta"></div>
+  </div>
+
+  <script>
+    // ==========================
+    // Inlined injection logic from utils/injection.ts
+    // ==========================
+    const TEST_TEXT = 'System Result:\nHello from injection testbed';
+
+    function showResult(text, meta) {
+      document.getElementById('injected-text').textContent = text;
+      document.getElementById('injected-meta').textContent = meta;
+    }
+
+    function injectIntoContentEditable(element, text) {
+      if (!element) return false;
+      const el = element;
+      el.focus();
+      document.execCommand('selectAll', false, null);
+      document.execCommand('delete', false, null);
+
+      const dt = new DataTransfer();
+      dt.setData('text/plain', text);
+      const pasteEvent = new ClipboardEvent('paste', {
+        clipboardData: dt,
+        bubbles: true,
+        cancelable: true,
+      });
+      el.dispatchEvent(pasteEvent);
+
+      if (el.innerText.length < 5) {
+        document.execCommand('insertText', false, text);
+      }
+      if (el.innerText.length < 5) {
+        el.innerText = text;
+      }
+
+      ['input', 'change', 'compositionend', 'keyup', 'keydown'].forEach((type) => {
+        el.dispatchEvent(new Event(type, { bubbles: true }));
+      });
+
+      return true;
+    }
+
+    function injectIntoTextarea(element, text) {
+      if (!element) return false;
+      const el = element;
+      el.focus();
+      el.value = text;
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    }
+
+    // Auto-detect strategy (mirrors injectResponse)
+    function injectResponseAuto(text) {
+      const strategies = [
+        () => injectIntoContentEditable(document.querySelector('rich-textarea [contenteditable="true"]'), text),
+        () => injectIntoContentEditable(document.querySelector('[role="textbox"][contenteditable="true"]'), text),
+        () => injectIntoContentEditable(document.querySelector('.ql-editor'), text),
+        () => injectIntoTextarea(document.querySelector('textarea'), text),
+      ];
+      for (const strategy of strategies) {
+        try {
+          if (strategy()) return true;
+        } catch (e) {
+          console.warn('Injection strategy failed', e);
+        }
+      }
+      return false;
+    }
+
+    // ==========================
+    // Test harness
+    // ==========================
+    function testStrategy(inputId, strategy) {
+      const t0 = performance.now();
+      let ok = false;
+      let target = null;
+      let strategyName = strategy;
+
+      if (strategy === 'auto') {
+        ok = injectResponseAuto(TEST_TEXT);
+        strategyName = 'auto-detect (all strategies)';
+      } else if (inputId === 'textarea') {
+        target = document.getElementById('input-textarea');
+        ok = injectIntoTextarea(target, TEST_TEXT);
+      } else if (inputId === 'contenteditable') {
+        target = document.getElementById('input-contenteditable');
+        ok = injectIntoContentEditable(target, TEST_TEXT);
+      } else if (inputId === 'rich') {
+        target = document.getElementById('input-rich');
+        ok = injectIntoContentEditable(target, TEST_TEXT);
+      }
+
+      const elapsed = (performance.now() - t0).toFixed(2);
+      if (ok) {
+        showResult(TEST_TEXT, `Strategy: ${strategyName} | Target: #${target ? target.id : '(auto)'} | Time: ${elapsed}ms | Status: OK`);
+      } else {
+        showResult('(injection failed)', `Strategy: ${strategyName} | Status: FAILED`);
+      }
+    }
+
+    function clearInput(id) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      if (el.tagName.toLowerCase() === 'textarea') {
+        el.value = '';
+      } else {
+        el.innerText = '';
+      }
+    }
+
+    function clearAll() {
+      clearInput('input-textarea');
+      clearInput('input-contenteditable');
+      clearInput('input-rich');
+      showResult('(nothing yet)', '');
+    }
+  </script>
+</body>
+</html>
