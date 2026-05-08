@@ -8,13 +8,16 @@ export function isValidPayload(payload: unknown): payload is AgentPayload {
   if (!payload || typeof payload !== 'object') return false;
   const p = payload as Record<string, unknown>;
   if (!p.action || typeof p.action !== 'string') return false;
-  const validActions = ['run_shell', 'write_file', 'read_file', 'list_files'];
+  const validActions = ['run_shell', 'write_file', 'read_file', 'list_files', 'git_status', 'git_diff', 'run_python'];
   if (!validActions.includes(p.action)) return false;
 
   if (p.action === 'run_shell' && typeof p.command !== 'string') return false;
   if (p.action === 'write_file' && (typeof p.filepath !== 'string' || typeof p.content !== 'string')) return false;
   if (p.action === 'read_file' && typeof p.filepath !== 'string') return false;
   if (p.action === 'list_files' && typeof p.filepath !== 'string') return false;
+  if (p.action === 'git_status' && typeof p.filepath !== 'string') return false;
+  if (p.action === 'git_diff' && typeof p.filepath !== 'string') return false;
+  if (p.action === 'run_python' && (typeof p.filepath !== 'string' && typeof p.content !== 'string')) return false;
 
   return true;
 }

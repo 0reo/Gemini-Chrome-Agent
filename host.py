@@ -203,7 +203,8 @@ def handle_list_files(msg):
         respond_success(
             req_id,
             {'duration_ms': duration_ms},
-            output=output
+            output=output,
+            code=result.returncode
         )
     except Exception as e:
         duration_ms = round((time.perf_counter() - start) * 1000)
@@ -214,14 +215,14 @@ def handle_list_files(msg):
         )
 
 
-def handle_git_status(msg):
+def handle_git_command(msg, subcommand):
     directory = os.path.expanduser(msg.get('filepath', '.'))
     req_id = msg.get('id', 'unknown')
     start = time.perf_counter()
-    logging.info(f"[{req_id}] Git status in: {directory}")
+    logging.info(f"[{req_id}] Git {subcommand} in: {directory}")
     try:
         result = subprocess.run(
-            ['git', 'status'],
+            ['git', subcommand],
             cwd=directory,
             capture_output=True,
             text=True,
@@ -229,75 +230,47 @@ def handle_git_status(msg):
         )
         output = result.stdout or ""
         if result.stderr:
-            logging.warning(f"[{req_id}] Git status stderr: {result.stderr}")
+            logging.warning(f"[{req_id}] Git {subcommand} stderr: {result.stderr}")
         if not output.strip():
             output = f"[Command completed with exit code {result.returncode} and no output]"
         output = truncate_output(output)
         duration_ms = round((time.perf_counter() - start) * 1000)
-        respond_success(
-            req_id,
-            {'duration_ms': duration_ms},
-            output=output
-        )
+        if result.returncode != 0:
+            respond_error(
+                req_id,
+                {'duration_ms': duration_ms},
+                output
+            )
+        else:
+            respond_success(
+                req_id,
+                {'duration_ms': duration_ms},
+                output=output
+            )
     except subprocess.TimeoutExpired:
         duration_ms = round((time.perf_counter() - start) * 1000)
-        logging.warning(f"[{req_id}] Git status timed out")
+        logging.warning(f"[{req_id}] Git {subcommand} timed out")
         respond_error(
             req_id,
             {'duration_ms': duration_ms},
-            'Git status timed out after 30 seconds.'
+            f'Git {subcommand} timed out after 30 seconds.'
         )
     except Exception as e:
         duration_ms = round((time.perf_counter() - start) * 1000)
-        logging.error(f"[{req_id}] Git status error: {e}")
+        logging.error(f"[{req_id}] Git {subcommand} error: {e}")
         respond_error(
             req_id,
             {'duration_ms': duration_ms},
-            f'Git status error: {str(e)}'
+            f'Git {subcommand} error: {str(e)}'
         )
+
+
+def handle_git_status(msg):
+    handle_git_command(msg, 'status')
 
 
 def handle_git_diff(msg):
-    directory = os.path.expanduser(msg.get('filepath', '.'))
-    req_id = msg.get('id', 'unknown')
-    start = time.perf_counter()
-    logging.info(f"[{req_id}] Git diff in: {directory}")
-    try:
-        result = subprocess.run(
-            ['git', 'diff'],
-            cwd=directory,
-            capture_output=True,
-            text=True,
-            timeout=30
-        )
-        output = result.stdout or ""
-        if result.stderr:
-            logging.warning(f"[{req_id}] Git diff stderr: {result.stderr}")
-        if not output.strip():
-            output = f"[Command completed with exit code {result.returncode} and no output]"
-        output = truncate_output(output)
-        duration_ms = round((time.perf_counter() - start) * 1000)
-        respond_success(
-            req_id,
-            {'duration_ms': duration_ms},
-            output=output
-        )
-    except subprocess.TimeoutExpired:
-        duration_ms = round((time.perf_counter() - start) * 1000)
-        logging.warning(f"[{req_id}] Git diff timed out")
-        respond_error(
-            req_id,
-            {'duration_ms': duration_ms},
-            'Git diff timed out after 30 seconds.'
-        )
-    except Exception as e:
-        duration_ms = round((time.perf_counter() - start) * 1000)
-        logging.error(f"[{req_id}] Git diff error: {e}")
-        respond_error(
-            req_id,
-            {'duration_ms': duration_ms},
-            f'Git diff error: {str(e)}'
-        )
+    handle_git_command(msg, 'diff')
 
 
 def handle_run_python(msg):
@@ -317,6 +290,14 @@ def handle_run_python(msg):
             script_path = temp_file.name
         elif filepath is not None:
             script_path = os.path.expanduser(filepath)
+            if not os.path.exists(script_path):
+                duration_ms = round((time.perf_counter() - start) * 1000)
+                respond_error(
+                    req_id,
+                    {'duration_ms': duration_ms},
+                    f'File not found: {script_path}'
+                )
+                return
         else:
             duration_ms = round((time.perf_counter() - start) * 1000)
             respond_error(
@@ -375,6 +356,7 @@ while True:
         msg = get_message()
         action = msg.get('action')
         req_id = msg.get('id', 'unknown')
+        start = time.perf_counter()
 
         if action == 'run_shell':
             handle_run_shell(msg)
@@ -391,10 +373,11 @@ while True:
         elif action == 'run_python':
             handle_run_python(msg)
         else:
+            duration_ms = round((time.perf_counter() - start) * 1000)
             logging.warning(f"[{req_id}] Unknown action: {action}")
             respond_error(
                 req_id,
-                {'duration_ms': 0},
+                {'duration_ms': duration_ms},
                 f'Unknown action: {action}'
             )
     except Exception as fatal_error:

@@ -17,4 +17,7 @@ export const VALID_ACTIONS: Set<string> = new Set([
   'write_file',
   'read_file',
   'list_files',
+  'git_status',
+  'git_diff',
+  'run_python',
 ]);

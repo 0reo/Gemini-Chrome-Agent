@@ -1,4 +1,4 @@
-export type AgentAction = 'run_shell' | 'write_file' | 'read_file' | 'list_files';
+export type AgentAction = 'run_shell' | 'write_file' | 'read_file' | 'list_files' | 'git_status' | 'git_diff' | 'run_python';
 
 export interface AgentPayload {
   id: string;
