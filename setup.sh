@@ -54,11 +54,11 @@ if [ -z "$EXTENSION_ID" ]; then
     exit 1
 fi
 
-# Validate Extension ID format: exactly 32 lowercase alphanumeric characters
-if ! [[ "$EXTENSION_ID" =~ ^[a-z0-9]{32}$ ]]; then
+# Validate Extension ID format: exactly 32 characters from Chrome's a-p alphabet
+if ! [[ "$EXTENSION_ID" =~ ^[a-p]{32}$ ]]; then
     echo "✖ Error: Invalid Extension ID format."
-    echo "Extension IDs must be exactly 32 lowercase alphanumeric characters."
-    echo "Example: abcdefghijklmnopqrstuvwxyz123456"
+    echo "Extension IDs must be exactly 32 characters using only a-p."
+    echo "Example: abcdefghijklmnopabcdefghijklmnop"
     exit 1
 fi
 echo "✔ Extension ID format is valid."
@@ -80,7 +80,7 @@ echo "✔ Generated com.local.gemini_agent.json with absolute path: $HOST_SCRIPT
 
 # 6. Create the Brave Native Messaging directory if it doesn't exist and verify write access
 if [ ! -d "$BRAVE_NM_DIR" ]; then
-    mkdir -p "$BRAVE_NM_DIR"
+    mkdir -p "$BRAVE_NM_DIR" || { echo "✖ Error: Failed to create directory $BRAVE_NM_DIR"; exit 1; }
 fi
 
 if [ ! -w "$BRAVE_NM_DIR" ]; then

@@ -16,12 +16,12 @@ When Gemini generates a JSON code block containing one of these actions, the ext
 
 | Layer | Technology | Files |
 |-------|-----------|-------|
-| Browser Extension | JavaScript (Manifest V3) | `manifest.json`, `background.js`, `content.js` |
+| Browser Extension | JavaScript (Manifest V3) via WXT | `manifest.json`, `background.js`, `content.js` |
 | Native Messaging Host | Python 3 (stdlib only) | `host.py`, `main.py` |
-| Setup & Tooling | Bash | `setup.sh` |
+| Setup & Tooling | Bash, Node.js, npm | `setup.sh` |
 | Optional Log Server | Python 3 (stdlib only) | `log_server.py` |
 
-**No build tools, package managers, or third-party dependencies are used.** The extension is loaded as an unpacked extension directly from the project directory.
+The extension is built with [WXT](https://wxt.dev/) and loaded as an unpacked extension from the build output directory.
 
 ## Project Structure
 
@@ -39,7 +39,8 @@ All source files live at the repository root:
 ├── log_server.py                  # Optional CORS log server for browser console interception
 ├── README.md                      # Human-facing quick start
 ├── project-documentation.md       # Detailed human-facing documentation
-└── Gemini_Chrome_Agent.md         # Conversation transcript that originated the project
+├── Gemini_Chrome_Agent.md         # Conversation transcript that originated the project
+└── .output/chrome-mv3/            # WXT build output (load this as unpacked extension)
 ```
 
 ## Architecture
@@ -64,19 +65,24 @@ All actions are represented as JSON code blocks inside the Gemini chat. The `con
 
 ## Setup & Installation
 
-There is **no build step**. The extension is loaded as an unpacked extension:
+The extension is built with WXT and loaded as an unpacked extension from the build output:
 
-1. Open Brave/Chrome and navigate to `brave://extensions/` (or `chrome://extensions/`).
-2. Enable **Developer mode**.
-3. Click **Load unpacked** and select this project directory.
-4. Copy the generated **Extension ID**.
-5. Run `./setup.sh` and paste the Extension ID when prompted.
-6. The script will:
+1. Install dependencies and build the extension:
+   ```bash
+   npm install
+   npm run build
+   ```
+2. Open Brave/Chrome and navigate to `brave://extensions/` (or `chrome://extensions/`).
+3. Enable **Developer mode**.
+4. Click **Load unpacked** and select `.output/chrome-mv3/` inside this project directory.
+5. Copy the generated **Extension ID**.
+6. Run `./setup.sh` and paste the Extension ID when prompted.
+7. The script will:
    - Make `host.py` executable
    - Generate `com.local.gemini_agent.json` with absolute paths and the Extension ID
    - Create the Brave Native Messaging directory at `~/.config/BraveSoftware/Brave-Browser/NativeMessagingHosts/`
    - Symlink the manifest into that directory
-7. Refresh the Gemini tab.
+8. Refresh the Gemini tab.
 
 **Order matters:** the extension must be loaded first (to generate the Extension ID) before running `setup.sh`, because the Native Messaging manifest must whitelist that specific Extension ID.
 
