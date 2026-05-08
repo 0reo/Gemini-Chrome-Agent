@@ -13,6 +13,9 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 
+MAX_OUTPUT_SIZE = 1024 * 1024  # 1MB max to prevent native messaging breakage
+
+
 def get_message():
     try:
         raw_length = sys.stdin.buffer.read(4)
@@ -27,6 +30,7 @@ def get_message():
         logging.error(f"Error reading message: {e}")
         sys.exit(1)
 
+
 def send_message(message_dict):
     try:
         encoded = json.dumps(message_dict).encode('utf-8')
@@ -36,6 +40,18 @@ def send_message(message_dict):
         logging.debug(f"Sent response: {str(message_dict)[:200]}...")
     except Exception as e:
         logging.error(f"Error sending message: {e}")
+
+
+def truncate_output(text, max_bytes=MAX_OUTPUT_SIZE):
+    """Truncate output to prevent breaking the native messaging protocol."""
+    if text is None:
+        text = ""
+    encoded = text.encode('utf-8')
+    if len(encoded) <= max_bytes:
+        return text
+    truncated = encoded[:max_bytes].decode('utf-8', errors='ignore')
+    return truncated + f"\n\n[Output truncated: exceeded {max_bytes} bytes]"
+
 
 logging.info("Gemini Host Script Started")
 
@@ -64,7 +80,13 @@ while True:
                 if not combined_output.strip():
                     combined_output = f"[Command completed with exit code {result.returncode} and no output]"
                 
-                send_message({'status': 'success', 'output': combined_output, 'code': result.returncode})
+                combined_output = truncate_output(combined_output)
+                
+                send_message({
+                    'status': 'success',
+                    'output': combined_output,
+                    'code': result.returncode
+                })
             except subprocess.TimeoutExpired:
                 logging.warning("Command timed out")
                 send_message({'status': 'error', 'error': 'Command timed out after 30 seconds.'})
@@ -77,8 +99,10 @@ while True:
             content = msg.get('content')
             logging.info(f"Writing file: {filepath}")
             try:
-                os.makedirs(os.path.dirname(filepath), exist_ok=True)
-                with open(filepath, 'w') as f:
+                directory = os.path.dirname(filepath)
+                if directory:
+                    os.makedirs(directory, exist_ok=True)
+                with open(filepath, 'w', encoding='utf-8') as f:
                     f.write(content)
                 send_message({'status': 'success', 'message': f'File {filepath} written successfully.'})
             except Exception as e:
@@ -90,8 +114,9 @@ while True:
             logging.info(f"Reading file: {filepath}")
             try:
                 if os.path.exists(filepath):
-                    with open(filepath, 'r') as f:
+                    with open(filepath, 'r', encoding='utf-8') as f:
                         content = f.read()
+                    content = truncate_output(content)
                     send_message({'status': 'success', 'output': content})
                 else:
                     send_message({'status': 'error', 'error': f'File not found: {filepath}'})
@@ -107,6 +132,6 @@ while True:
         logging.critical(f"Fatal error in main loop: {fatal_error}")
         try:
             send_message({'status': 'fatal_error', 'error': str(fatal_error)})
-        except:
+        except Exception:
             pass
         sys.exit(1)
