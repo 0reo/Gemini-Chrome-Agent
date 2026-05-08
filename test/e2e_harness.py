@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """End-to-end test harness for the Gemini Chrome Agent native messaging host.
 
 Launches host.py as a subprocess, sends payloads via the Native Messaging
@@ -67,6 +68,64 @@ def make_request(action: str, **kwargs) -> tuple[str, dict]:
     return req_id, payload
 
 
+class HostTestBase(unittest.TestCase):
+    """Base class that manages a host.py subprocess, transport, and temp dir."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.proc = subprocess.Popen(
+            [sys.executable, HOST_PY],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        cls.transport = NativeMessagingTransport(cls.proc)
+        cls.temp_dir = tempfile.mkdtemp(prefix="e2e_harness_")
+
+    @classmethod
+    def tearDownClass(cls):
+        # Guard against AttributeError if setUpClass raised before defining attrs.
+        if hasattr(cls, "transport"):
+            cls.transport.close()
+        if hasattr(cls, "proc"):
+            try:
+                cls.proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                cls.proc.terminate()
+                cls.proc.wait(timeout=2)
+        if hasattr(cls, "temp_dir"):
+            shutil.rmtree(cls.temp_dir, ignore_errors=True)
+
+    def _send_and_assert_success(self, action: str, **kwargs) -> dict:
+        req_id, payload = make_request(action, **kwargs)
+        self.transport.send(payload)
+        response = self.transport.recv()
+
+        self.assertEqual(response["id"], req_id, "Request/response id mismatch")
+        self.assertEqual(response["status"], "success", f"Expected success, got: {response.get('error')}")
+        self.assertIn("meta", response)
+        self.assertIn("duration_ms", response["meta"])
+        duration = response["meta"]["duration_ms"]
+        self.assertIsInstance(duration, int)
+        self.assertGreaterEqual(duration, 0)
+        return response
+
+    def _send_and_assert_error(self, action: str, **kwargs) -> dict:
+        req_id, payload = make_request(action, **kwargs)
+        self.transport.send(payload)
+        response = self.transport.recv()
+
+        self.assertEqual(response["id"], req_id, "Request/response id mismatch")
+        self.assertEqual(response["status"], "error", f"Expected error, got: {response}")
+        self.assertIn("meta", response)
+        self.assertIn("duration_ms", response["meta"])
+        duration = response["meta"]["duration_ms"]
+        self.assertIsInstance(duration, int)
+        self.assertGreaterEqual(duration, 0)
+        self.assertIn("error", response)
+        return response
+
+
 class TestHostLifecycle(unittest.TestCase):
     """Verify host.py starts and stops cleanly."""
 
@@ -87,45 +146,11 @@ class TestHostLifecycle(unittest.TestCase):
         except subprocess.TimeoutExpired:
             proc.terminate()
             proc.wait(timeout=2)
+        self.assertEqual(proc.returncode, 0, "host.py should exit cleanly with code 0")
 
 
-class TestAllActions(unittest.TestCase):
+class TestAllActions(HostTestBase):
     """Happy-path tests for every supported action."""
-
-    @classmethod
-    def setUpClass(cls):
-        cls.proc = subprocess.Popen(
-            [sys.executable, HOST_PY],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        cls.transport = NativeMessagingTransport(cls.proc)
-        cls.temp_dir = tempfile.mkdtemp(prefix="e2e_harness_")
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.transport.close()
-        try:
-            cls.proc.wait(timeout=2)
-        except subprocess.TimeoutExpired:
-            cls.proc.terminate()
-            cls.proc.wait(timeout=2)
-        shutil.rmtree(cls.temp_dir, ignore_errors=True)
-
-    def _send_and_assert_success(self, action: str, **kwargs) -> dict:
-        req_id, payload = make_request(action, **kwargs)
-        self.transport.send(payload)
-        response = self.transport.recv()
-
-        self.assertEqual(response["id"], req_id, "Request/response id mismatch")
-        self.assertEqual(response["status"], "success", f"Expected success, got: {response.get('error')}")
-        self.assertIn("meta", response)
-        self.assertIn("duration_ms", response["meta"])
-        duration = response["meta"]["duration_ms"]
-        self.assertIsInstance(duration, int)
-        self.assertGreaterEqual(duration, 0)
-        return response
 
     def test_run_shell(self):
         response = self._send_and_assert_success(
@@ -181,10 +206,10 @@ class TestAllActions(unittest.TestCase):
         subprocess.run(["git", "add", "."], cwd=git_dir, check=True, capture_output=True)
         response = self._send_and_assert_success("git_status", filepath=git_dir)
         self.assertIn("output", response)
-        # Git status in a newly-created repo with staged files should mention something
+        # Git status in a newly-created repo with staged files should contain a known string
         self.assertTrue(
-            len(response["output"]) > 0,
-            "git_status output should not be empty"
+            "On branch" in response["output"] or "nothing to commit" in response["output"] or "Changes to be committed" in response["output"],
+            f"git_status output missing expected keywords: {response['output']!r}"
         )
 
     def test_git_diff(self):
@@ -222,44 +247,8 @@ class TestAllActions(unittest.TestCase):
         self.assertIn("4", response["output"])
 
 
-class TestErrorCases(unittest.TestCase):
+class TestErrorCases(HostTestBase):
     """Tests for expected error responses."""
-
-    @classmethod
-    def setUpClass(cls):
-        cls.proc = subprocess.Popen(
-            [sys.executable, HOST_PY],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        cls.transport = NativeMessagingTransport(cls.proc)
-        cls.temp_dir = tempfile.mkdtemp(prefix="e2e_harness_err_")
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.transport.close()
-        try:
-            cls.proc.wait(timeout=2)
-        except subprocess.TimeoutExpired:
-            cls.proc.terminate()
-            cls.proc.wait(timeout=2)
-        shutil.rmtree(cls.temp_dir, ignore_errors=True)
-
-    def _send_and_assert_error(self, action: str, **kwargs) -> dict:
-        req_id, payload = make_request(action, **kwargs)
-        self.transport.send(payload)
-        response = self.transport.recv()
-
-        self.assertEqual(response["id"], req_id, "Request/response id mismatch")
-        self.assertEqual(response["status"], "error", f"Expected error, got: {response}")
-        self.assertIn("meta", response)
-        self.assertIn("duration_ms", response["meta"])
-        duration = response["meta"]["duration_ms"]
-        self.assertIsInstance(duration, int)
-        self.assertGreaterEqual(duration, 0)
-        self.assertIn("error", response)
-        return response
 
     def test_unknown_action(self):
         response = self._send_and_assert_error("fly_to_the_moon")
@@ -269,6 +258,10 @@ class TestErrorCases(unittest.TestCase):
         response = self._send_and_assert_error("run_shell")
         # host.py does .get('command') → None → subprocess.run(None, ...) raises TypeError
         self.assertIn("error", response)
+        self.assertTrue(
+            "command" in response["error"] or "NoneType" in response["error"],
+            f"Error message should mention missing command or NoneType, got: {response['error']!r}"
+        )
 
     def test_run_python_nonexistent_filepath(self):
         response = self._send_and_assert_error(
@@ -283,29 +276,8 @@ class TestErrorCases(unittest.TestCase):
         self.assertIn("File not found", response["error"])
 
 
-class TestProtocolProperties(unittest.TestCase):
+class TestProtocolProperties(HostTestBase):
     """Tests for protocol-level behaviour: truncation, sequential ordering."""
-
-    @classmethod
-    def setUpClass(cls):
-        cls.proc = subprocess.Popen(
-            [sys.executable, HOST_PY],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        cls.transport = NativeMessagingTransport(cls.proc)
-        cls.temp_dir = tempfile.mkdtemp(prefix="e2e_harness_proto_")
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.transport.close()
-        try:
-            cls.proc.wait(timeout=2)
-        except subprocess.TimeoutExpired:
-            cls.proc.terminate()
-            cls.proc.wait(timeout=2)
-        shutil.rmtree(cls.temp_dir, ignore_errors=True)
 
     def test_large_output_truncation(self):
         """Generate >1MB of stdout and verify truncation notice is present."""
