@@ -1,15 +1,16 @@
-// Version: 2.2 - Settling period to prevent cascade execution on refresh
+// Version: 2.3 - Cooldown & execution gate to prevent runaway loops
 console.log("[Gemini Agent] content script loaded!");
 
 let isAgentPaused = false;
+let isCooldown = false;
+let cooldownTimer = null;
+let executionsThisMinute = 0;
+let minuteTimer = null;
 
-// --- Settling Period ---
-// Gemini renders conversation history lazily. Code blocks may appear in the DOM
-// seconds after the script loads. During the settling period, any detected payload
-// is marked as processed but NOT executed. After this period, only genuinely new
-// payloads (from fresh responses) are executed.
-const PAGE_LOAD_TIME = Date.now();
+const COOLDOWN_MS = 15000;           // 15s after each execution
+const MAX_PER_MINUTE = 5;            // auto-pause if exceeded
 const SETTLING_PERIOD_MS = 5000;
+const PAGE_LOAD_TIME = Date.now();
 
 // --- Agent Controls UI ---
 const createControls = () => {
@@ -32,10 +33,8 @@ const createControls = () => {
     
     toggleBtn.onclick = () => {
         isAgentPaused = !isAgentPaused;
-        toggleBtn.innerText = isAgentPaused ? 'Resume Agent' : 'Pause Agent';
-        toggleBtn.style.borderColor = isAgentPaused ? '#d32f2f' : '#444';
-        statusText.innerText = isAgentPaused ? 'Status: Paused' : 'Status: Active';
-        statusText.style.color = isAgentPaused ? '#d32f2f' : '#aaa';
+        if (!isAgentPaused) clearCooldown();
+        updateUI();
         console.log("[Gemini Agent] State changed. Paused:", isAgentPaused);
     };
 
@@ -51,12 +50,67 @@ const createControls = () => {
     });
 };
 
+function updateUI() {
+    const btn = document.querySelector('#gemini-agent-controls button');
+    const status = document.getElementById('gemini-agent-status');
+    if (!btn || !status) return;
+    
+    if (isAgentPaused) {
+        btn.innerText = 'Resume Agent';
+        btn.style.borderColor = '#d32f2f';
+        status.innerText = 'Status: Paused';
+        status.style.color = '#d32f2f';
+    } else if (isCooldown) {
+        btn.innerText = 'On Cooldown';
+        btn.style.borderColor = '#f9a825';
+        status.innerText = 'Status: Cooldown';
+        status.style.color = '#f9a825';
+    } else {
+        btn.innerText = 'Pause Agent';
+        btn.style.borderColor = '#444';
+        status.innerText = 'Status: Active';
+        status.style.color = '#aaa';
+    }
+}
+
+function setCooldown() {
+    isCooldown = true;
+    updateUI();
+    if (cooldownTimer) clearTimeout(cooldownTimer);
+    cooldownTimer = setTimeout(() => {
+        isCooldown = false;
+        updateUI();
+        console.log("[Gemini Agent] Cooldown ended.");
+    }, COOLDOWN_MS);
+}
+
+function clearCooldown() {
+    isCooldown = false;
+    if (cooldownTimer) clearTimeout(cooldownTimer);
+    updateUI();
+}
+
+function trackExecution() {
+    executionsThisMinute++;
+    if (!minuteTimer) {
+        minuteTimer = setTimeout(() => {
+            executionsThisMinute = 0;
+            minuteTimer = null;
+        }, 60000);
+    }
+    if (executionsThisMinute >= MAX_PER_MINUTE) {
+        console.warn(`[Gemini Agent] Rate limit hit (${MAX_PER_MINUTE}/min). Auto-pausing.`);
+        isAgentPaused = true;
+        updateUI();
+    }
+}
+
 createControls();
 
 // --- Deduplication System ---
-const processedPayloads = new Map(); // hash -> timestamp
-const PAYLOAD_TTL_MS = 60000; // 60 seconds
-const CLEANUP_INTERVAL_MS = 5000; // only clean stale entries every 5s
+const processedPayloads = new Map();
+const PAYLOAD_TTL_MS = 60000;
+const CLEANUP_INTERVAL_MS = 5000;
 let lastCleanup = 0;
 const VALID_ACTIONS = new Set(['run_shell', 'write_file', 'read_file']);
 
@@ -78,8 +132,6 @@ function getPayloadHash(payload) {
 function isRecentlyProcessed(payload) {
     const now = Date.now();
     const hash = getPayloadHash(payload);
-    
-    // Periodic cleanup of old entries (throttled to avoid iterating every scan)
     if (now - lastCleanup > CLEANUP_INTERVAL_MS) {
         lastCleanup = now;
         for (const [key, time] of processedPayloads.entries()) {
@@ -88,11 +140,9 @@ function isRecentlyProcessed(payload) {
             }
         }
     }
-    
     if (processedPayloads.has(hash)) {
         return true;
     }
-    
     processedPayloads.set(hash, now);
     return false;
 }
@@ -101,15 +151,16 @@ function isValidAgentPayload(payload) {
     if (!payload || typeof payload !== 'object') return false;
     const action = payload.action;
     if (!action || !VALID_ACTIONS.has(action)) return false;
-    
     if (action === 'run_shell' && typeof payload.command !== 'string') return false;
     if (action === 'write_file' && (typeof payload.filepath !== 'string' || typeof payload.content !== 'string')) return false;
     if (action === 'read_file' && typeof payload.filepath !== 'string') return false;
-    
     return true;
 }
 
-// --- Mark existing blocks on load (prevents re-execution on refresh) ---
+function isSettling() {
+    return (Date.now() - PAGE_LOAD_TIME) < SETTLING_PERIOD_MS;
+}
+
 function markExistingBlocks() {
     const blocks = document.querySelectorAll('pre code, code');
     let marked = 0;
@@ -122,27 +173,19 @@ function markExistingBlocks() {
                 isRecentlyProcessed(payload);
                 marked++;
             }
-        } catch (e) {
-            // Not valid JSON yet or not an agent payload
-        }
+        } catch (e) {}
     }
     if (marked > 0) {
         console.log(`[Gemini Agent] Marked ${marked} existing payload(s) as processed.`);
     }
 }
 
-function isSettling() {
-    return (Date.now() - PAGE_LOAD_TIME) < SETTLING_PERIOD_MS;
-}
-
 // --- Debounced Payload Detection ---
-// Scanning the DOM on every mutation causes severe jank while Gemini streams.
-// We debounce so the scan only runs after mutations settle.
 let scanTimeout = null;
 const SCAN_DEBOUNCE_MS = 250;
 
 const observer = new MutationObserver(() => {
-    if (isAgentPaused) return;
+    if (isAgentPaused || isCooldown) return;
     if (scanTimeout) clearTimeout(scanTimeout);
     scanTimeout = setTimeout(scanForPayloads, SCAN_DEBOUNCE_MS);
 });
@@ -150,13 +193,10 @@ const observer = new MutationObserver(() => {
 function scanForPayloads() {
     scanTimeout = null;
     const settling = isSettling();
-    // textContent is orders of magnitude faster than innerText because it
-    // does not force a layout recalculation.
     const blocks = document.querySelectorAll('pre code, code');
     for (const block of blocks) {
         const text = block.textContent;
         if (!text.includes('"action"')) continue;
-        
         try {
             let payload = JSON.parse(text);
             if (!isValidAgentPayload(payload)) continue;
@@ -169,13 +209,12 @@ function scanForPayloads() {
 
             console.log("[Gemini Agent] Executing action:", payload.action, payload);
             chrome.runtime.sendMessage({type: "SEND_TO_HOST", payload: payload});
-        } catch (e) { 
-            // JSON.parse fails while streaming — expected, ignore
-        }
+            setCooldown();
+            trackExecution();
+        } catch (e) {}
     }
 }
 
-// Mark existing blocks BEFORE observing, then watch for new ones
 markExistingBlocks();
 observer.observe(document.body, { childList: true, subtree: true, characterData: true });
 
@@ -245,12 +284,9 @@ function injectResponse(data) {
 
 function injectIntoContentEditable(element, text) {
     element.focus();
-    
-    // Clear existing content
     document.execCommand('selectAll', false, null);
     document.execCommand('delete', false, null);
     
-    // Strategy A: Clipboard paste event (often triggers React state updates)
     const dt = new DataTransfer();
     dt.setData('text/plain', text);
     const pasteEvent = new ClipboardEvent('paste', { 
@@ -260,17 +296,13 @@ function injectIntoContentEditable(element, text) {
     });
     element.dispatchEvent(pasteEvent);
     
-    // Strategy B: execCommand fallback
     if (element.innerText.length < 5) {
         document.execCommand('insertText', false, text);
     }
-    
-    // Strategy C: Direct property manipulation for stubborn frameworks
     if (element.innerText.length < 5) {
         element.innerText = text;
     }
     
-    // Dispatch framework lifecycle events
     ['input', 'change', 'compositionend', 'keyup', 'keydown'].forEach(type => {
         element.dispatchEvent(new Event(type, { bubbles: true }));
     });
@@ -289,7 +321,7 @@ function triggerSend() {
     ];
     
     let attempts = 0;
-    const maxAttempts = 50; // 10 seconds total
+    const maxAttempts = 50;
     
     const interval = setInterval(() => {
         if (isAgentPaused) {
@@ -298,8 +330,6 @@ function triggerSend() {
         }
         
         let sendButton = null;
-        
-        // Selector-based search
         for (const selector of buttonSelectors) {
             try {
                 const btn = document.querySelector(selector);
@@ -307,10 +337,9 @@ function triggerSend() {
                     sendButton = btn;
                     break;
                 }
-            } catch (e) { /* invalid selector */ }
+            } catch (e) {}
         }
         
-        // Text-content fallback
         if (!sendButton) {
             sendButton = Array.from(document.querySelectorAll('button')).find(btn => {
                 const text = (btn.innerText || btn.textContent || '').toLowerCase();
@@ -326,7 +355,6 @@ function triggerSend() {
             return;
         }
         
-        // Keep triggering input events to enable the button
         triggerInputEvents();
         
         if (++attempts >= maxAttempts) {
