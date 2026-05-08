@@ -12,74 +12,36 @@ const MAX_PER_MINUTE = 5;            // auto-pause if exceeded
 const SETTLING_PERIOD_MS = 5000;
 const PAGE_LOAD_TIME = Date.now();
 
-// --- Agent Controls UI ---
-const createControls = () => {
-    if (document.getElementById('gemini-agent-controls')) return;
-    const container = document.createElement('div');
-    container.id = 'gemini-agent-controls';
-    container.style.cssText = 'position:fixed;bottom:80px;right:20px;z-index:10000;background:#1e1e1e;color:white;padding:12px;border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,0.4);display:flex;flex-direction:column;gap:10px;font-family:sans-serif;font-size:13px;border:1px solid #333;min-width:150px;';
-    
-    const header = document.createElement('div');
-    header.innerHTML = '<b>Agent Control</b>';
-    
-    const statusText = document.createElement('div');
-    statusText.id = 'gemini-agent-status';
-    statusText.innerText = 'Status: Active';
-    statusText.style.cssText = 'font-size:11px;color:#aaa;';
-    
-    const toggleBtn = document.createElement('button');
-    toggleBtn.innerText = 'Pause Agent';
-    toggleBtn.style.cssText = 'background:#333;color:white;border:1px solid #444;padding:6px;cursor:pointer;border-radius:6px;width:100%;';
-    
-    toggleBtn.onclick = () => {
-        isAgentPaused = !isAgentPaused;
-        if (!isAgentPaused) clearCooldown();
-        updateUI();
-        console.log("[Gemini Agent] State changed. Paused:", isAgentPaused);
-    };
-
-    container.appendChild(header);
-    container.appendChild(statusText);
-    container.appendChild(toggleBtn);
-    document.body.appendChild(container);
-
-    window.addEventListener('keydown', (e) => {
-        if (e.altKey && e.shiftKey && e.key === 'K') {
-            toggleBtn.click();
-        }
-    });
-};
-
-function updateUI() {
-    const btn = document.querySelector('#gemini-agent-controls button');
-    const status = document.getElementById('gemini-agent-status');
-    if (!btn || !status) return;
-    
-    if (isAgentPaused) {
-        btn.innerText = 'Resume Agent';
-        btn.style.borderColor = '#d32f2f';
-        status.innerText = 'Status: Paused';
-        status.style.color = '#d32f2f';
-    } else if (isCooldown) {
-        btn.innerText = 'On Cooldown';
-        btn.style.borderColor = '#f9a825';
-        status.innerText = 'Status: Cooldown';
-        status.style.color = '#f9a825';
-    } else {
-        btn.innerText = 'Pause Agent';
-        btn.style.borderColor = '#444';
-        status.innerText = 'Status: Active';
-        status.style.color = '#aaa';
+// --- Agent Controls (synced via storage) ---
+chrome.storage.local.get('isAgentPaused').then(({ isAgentPaused: stored }) => {
+    if (stored !== undefined) {
+        isAgentPaused = stored;
+        console.log("[Gemini Agent] Initial pause state from storage:", isAgentPaused);
     }
-}
+});
+
+chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'local' && changes.isAgentPaused) {
+        isAgentPaused = changes.isAgentPaused.newValue;
+        if (!isAgentPaused) clearCooldown();
+        console.log("[Gemini Agent] Pause state synced via storage:", isAgentPaused);
+    }
+});
+
+window.addEventListener('keydown', (e) => {
+    if (e.altKey && e.shiftKey && e.key === 'K') {
+        isAgentPaused = !isAgentPaused;
+        chrome.storage.local.set({ isAgentPaused });
+        if (!isAgentPaused) clearCooldown();
+        console.log("[Gemini Agent] State changed. Paused:", isAgentPaused);
+    }
+});
 
 function setCooldown() {
     isCooldown = true;
-    updateUI();
     if (cooldownTimer) clearTimeout(cooldownTimer);
     cooldownTimer = setTimeout(() => {
         isCooldown = false;
-        updateUI();
         console.log("[Gemini Agent] Cooldown ended.");
     }, COOLDOWN_MS);
 }
@@ -87,7 +49,6 @@ function setCooldown() {
 function clearCooldown() {
     isCooldown = false;
     if (cooldownTimer) clearTimeout(cooldownTimer);
-    updateUI();
 }
 
 function trackExecution() {
@@ -101,11 +62,9 @@ function trackExecution() {
     if (executionsThisMinute >= MAX_PER_MINUTE) {
         console.warn(`[Gemini Agent] Rate limit hit (${MAX_PER_MINUTE}/min). Auto-pausing.`);
         isAgentPaused = true;
-        updateUI();
+        chrome.storage.local.set({ isAgentPaused: true });
     }
 }
-
-createControls();
 
 // --- Deduplication System ---
 const processedPayloads = new Map();
