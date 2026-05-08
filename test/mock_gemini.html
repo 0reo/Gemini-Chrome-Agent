@@ -191,14 +191,20 @@
     <div class="control-group">
       <label>Agent State</label>
       <div class="toggle-row">
-        <span id="state-badge" class="badge" style="background:#4ecca3;color:#000">armed</span>
+        <span id="state-badge" class="badge" style="background:var(--highlight)">paused</span>
       </div>
-      <p class="hint">Settling, armed, cooldown, paused.</p>
+      <p class="hint" id="state-hint">Agent is paused. Click Resume to activate.</p>
+    </div>
+
+    <div class="control-group">
+      <label>Safety Controls</label>
+      <button id="btn-toggle-pause" class="secondary">Resume</button>
+      <p class="hint">Cooldown: <span id="cooldown-remaining">0</span>s | Rate: <span id="rate-count">0</span>/5 min</p>
     </div>
 
     <div class="control-group">
       <label>Stats</label>
-      <p class="hint">Detected: <span id="stat-detected">0</span> | Dispatched: <span id="stat-dispatched">0</span> | Deduped: <span id="stat-deduped">0</span></p>
+      <p class="hint">Detected: <span id="stat-detected">0</span> | Dispatched: <span id="stat-dispatched">0</span> | Deduped: <span id="stat-deduped">0</span> | Ignored: <span id="stat-ignored">0</span></p>
     </div>
   </aside>
 
@@ -216,7 +222,7 @@
       </div>
       <div class="message user">Show me my home directory.</div>
       <div class="message model">
-        <pre><code>{"action":"list_files","filepath":"~"}</code></pre>
+        <pre><code>{"action":"list_files","filepath":"."}</code></pre>
       </div>
     </div>
 
@@ -230,6 +236,18 @@
   </main>
 
   <script>
+    // ==========================
+    // Config (mirrors utils/config.ts)
+    // ==========================
+    const CONFIG = {
+      COOLDOWN_MS: 15000,
+      MAX_PER_MINUTE: 5,
+      SETTLING_PERIOD_MS: 5000,
+      PAYLOAD_TTL_MS: 60000,
+      CLEANUP_INTERVAL_MS: 5000,
+      SCAN_DEBOUNCE_MS: 250,
+    };
+
     // ==========================
     // Inlined protocol logic (mirrors utils/protocol.ts)
     // ==========================
@@ -272,16 +290,14 @@
     // ==========================
     const processedPayloads = new Map();
     let lastCleanup = 0;
-    const PAYLOAD_TTL_MS = 60000;
-    const CLEANUP_INTERVAL_MS = 5000;
 
     function isRecentlyProcessed(payload) {
       const now = Date.now();
       const h = hashPayload(payload);
-      if (now - lastCleanup > CLEANUP_INTERVAL_MS) {
+      if (now - lastCleanup > CONFIG.CLEANUP_INTERVAL_MS) {
         lastCleanup = now;
         for (const [key, time] of processedPayloads.entries()) {
-          if (now - time > PAYLOAD_TTL_MS) processedPayloads.delete(key);
+          if (now - time > CONFIG.PAYLOAD_TTL_MS) processedPayloads.delete(key);
         }
       }
       if (processedPayloads.has(h)) return true;
@@ -291,6 +307,87 @@
 
     function markPayloadProcessed(payload) {
       processedPayloads.set(hashPayload(payload), Date.now());
+    }
+
+    // ==========================
+    // Safety State Machine (mirrors content.ts)
+    // ==========================
+    let state = 'paused';
+    let cooldownTimer = null;
+    let executionsThisMinute = 0;
+    let minuteTimer = null;
+    let scanTimeout = null;
+    const pageLoadTime = Date.now();
+
+    function setState(newState) {
+      log('info', `State transition: ${state} → ${newState}`);
+      state = newState;
+      updateStateBadge();
+    }
+
+    function isSettling() {
+      return state === 'settling' && Date.now() - pageLoadTime < CONFIG.SETTLING_PERIOD_MS;
+    }
+
+    function isArmed() {
+      return state === 'armed' || state === 'cooldown';
+    }
+
+    function isPaused() {
+      return state === 'paused';
+    }
+
+    function setCooldown() {
+      setState('cooldown');
+      if (cooldownTimer) clearTimeout(cooldownTimer);
+      cooldownTimer = setTimeout(() => {
+        setState('armed');
+        log('info', 'Cooldown ended');
+      }, CONFIG.COOLDOWN_MS);
+    }
+
+    function trackExecution() {
+      executionsThisMinute++;
+      if (!minuteTimer) {
+        minuteTimer = setTimeout(() => {
+          executionsThisMinute = 0;
+          minuteTimer = null;
+        }, 60000);
+      }
+      if (executionsThisMinute >= CONFIG.MAX_PER_MINUTE) {
+        log('warn', `Rate limit hit (${CONFIG.MAX_PER_MINUTE}/min). Auto-pausing.`);
+        setState('paused');
+      }
+    }
+
+    function updateStateBadge() {
+      const badge = document.getElementById('state-badge');
+      const hint = document.getElementById('state-hint');
+      const btn = document.getElementById('btn-toggle-pause');
+
+      let color = 'var(--highlight)';
+      let text = state;
+
+      if (state === 'armed') {
+        color = '#4ecca3';
+        hint.textContent = 'Agent is armed and scanning for payloads.';
+        btn.textContent = 'Pause';
+      } else if (state === 'paused') {
+        color = 'var(--highlight)';
+        hint.textContent = 'Agent is paused. Click Resume to activate.';
+        btn.textContent = 'Resume';
+      } else if (state === 'cooldown') {
+        color = 'var(--warn)';
+        hint.textContent = 'Agent is in cooldown after executing a payload.';
+        btn.textContent = 'Pause';
+      } else if (state === 'settling') {
+        color = '#58a6ff';
+        hint.textContent = 'Agent is settling — ignoring historical blocks.';
+        btn.textContent = 'Pause';
+      }
+
+      badge.style.background = color;
+      badge.textContent = text;
     }
 
     // ==========================
@@ -318,10 +415,14 @@
     const statDetected = document.getElementById('stat-detected');
     const statDispatched = document.getElementById('stat-dispatched');
     const statDeduped = document.getElementById('stat-deduped');
+    const statIgnored = document.getElementById('stat-ignored');
+    const cooldownRemaining = document.getElementById('cooldown-remaining');
+    const rateCount = document.getElementById('rate-count');
 
     let detectedCount = 0;
     let dispatchedCount = 0;
     let dedupedCount = 0;
+    let ignoredCount = 0;
 
     // ==========================
     // Logging
@@ -359,13 +460,18 @@
     // Scanner (mirrors content.ts logic)
     // ==========================
     function scanForPayloads() {
+      scanTimeout = null;
+      const settling = isSettling();
       const blocks = document.querySelectorAll('pre code, code');
+
       for (const block of blocks) {
         const text = block.textContent || '';
         if (!text.includes('"action"')) continue;
+
         try {
           const payload = JSON.parse(text);
           if (!isValidPayload(payload)) continue;
+
           detectedCount++;
           statDetected.textContent = detectedCount;
 
@@ -376,18 +482,33 @@
             continue;
           }
 
+          if (settling) {
+            ignoredCount++;
+            statIgnored.textContent = ignoredCount;
+            log('info', 'Settling: ignored historical payload', `action=${payload.action}`);
+            continue;
+          }
+
           dispatchedCount++;
           statDispatched.textContent = dispatchedCount;
           log('success', 'Payload dispatched', `action=${payload.action} id=${payload.id || 'none'}`);
           log('info', 'Would send to background:', JSON.stringify(payload));
+
+          setCooldown();
+          trackExecution();
         } catch {
           // JSON parse failed — block is still streaming
         }
       }
     }
 
+    // ==========================
+    // Debounced MutationObserver (mirrors content.ts)
+    // ==========================
     const observer = new MutationObserver(() => {
-      scanForPayloads();
+      if (isPaused() || state === 'cooldown') return;
+      if (scanTimeout) clearTimeout(scanTimeout);
+      scanTimeout = setTimeout(scanForPayloads, CONFIG.SCAN_DEBOUNCE_MS);
     });
     observer.observe(chatArea, { childList: true, subtree: true, characterData: true });
 
@@ -445,6 +566,36 @@
       logOutput.innerHTML = '';
     });
 
+    document.getElementById('btn-toggle-pause').addEventListener('click', () => {
+      if (isPaused()) {
+        setState('settling');
+        setTimeout(() => {
+          if (!isPaused()) {
+            setState('armed');
+          }
+        }, CONFIG.SETTLING_PERIOD_MS);
+      } else {
+        setState('paused');
+        if (cooldownTimer) {
+          clearTimeout(cooldownTimer);
+          cooldownTimer = null;
+        }
+      }
+    });
+
+    // ==========================
+    // Periodic UI updates for cooldown / rate counters
+    // ==========================
+    setInterval(() => {
+      rateCount.textContent = executionsThisMinute;
+      if (state === 'cooldown' && cooldownTimer) {
+        // approximate remaining (we don't track exact end time for simplicity)
+        cooldownRemaining.textContent = 'active';
+      } else {
+        cooldownRemaining.textContent = '0';
+      }
+    }, 500);
+
     // ==========================
     // Initial scan + mark existing
     // ==========================
@@ -465,7 +616,8 @@
       if (marked > 0) log('info', `Marked ${marked} existing payload(s) as processed (settling guard)`);
     }
     markExistingBlocks();
-    log('info', 'Mock Gemini loaded. Observer active.');
+    log('info', 'Mock Gemini loaded. Observer active. Initial state: paused');
+    updateStateBadge();
   </script>
 </body>
 </html>

@@ -2,14 +2,22 @@
 
 These tests mirror the encode/decode logic in host.py but operate against
 in-memory streams so they can be exercised without a live browser host pipe.
+
+What is tested:
+- Frame encoding: JSON dict → 4-byte little-endian length prefix + JSON bytes
+- Frame decoding: reading length header and body from a byte stream
+- Error handling: EOF, truncated headers, truncated bodies, malformed JSON
+- Large payload handling: the standalone truncate_output helper (mirrors host.py)
+
+What is NOT tested:
+- Timeout handling: host.py performs blocking reads on stdin with no timeout
+  mechanism. Timeout safety is out of scope for the current protocol layer.
 """
 
 import io
 import json
 import struct
-import time
 import unittest
-from unittest.mock import patch
 
 MAX_OUTPUT_SIZE = 1024 * 1024  # 1MB — must match host.py
 
@@ -46,29 +54,6 @@ def decode_frame(stream: io.BytesIO) -> dict:
             f"Truncated body: expected {message_length} bytes, got {len(message_bytes)}"
         )
     return json.loads(message_bytes.decode("utf-8"))
-
-
-def decode_frame_with_timeout(stream: io.BytesIO, timeout_ms: int = 5000) -> dict:
-    """Decode a frame with a mocked timeout guard (raises TimeoutError)."""
-    import time
-
-    start = time.perf_counter()
-    raw_length = stream.read(4)
-    if len(raw_length) != 4:
-        raise ValueError("Incomplete length header")
-
-    elapsed_ms = (time.perf_counter() - start) * 1000
-    if elapsed_ms > timeout_ms:
-        raise TimeoutError("Frame read exceeded timeout")
-
-    message_length = struct.unpack("@I", raw_length)[0]
-    start_body = time.perf_counter()
-    message = stream.read(message_length)
-    elapsed_ms = (time.perf_counter() - start_body) * 1000
-    if elapsed_ms > timeout_ms:
-        raise TimeoutError("Frame body read exceeded timeout")
-
-    return json.loads(message.decode("utf-8"))
 
 
 class TestFrameEncoding(unittest.TestCase):
@@ -190,33 +175,6 @@ class TestLargePayloadHandling(unittest.TestCase):
         stream = io.BytesIO(frame)
         decoded = decode_frame(stream)
         self.assertEqual(decoded["output"], big_text)
-
-
-class TestTimeoutBehavior(unittest.TestCase):
-    """Tests for mocked timeout behavior."""
-
-    @patch("time.perf_counter")
-    def test_timeout_on_length_header(self, mock_perf):
-        # Simulate time advancing past the timeout during header read
-        mock_perf.side_effect = [0.0, 10.0]  # start, end
-        stream = io.BytesIO(struct.pack("@I", 10) + b"0123456789")
-        with self.assertRaises(TimeoutError):
-            decode_frame_with_timeout(stream, timeout_ms=100)
-
-    @patch("time.perf_counter")
-    def test_timeout_on_body_read(self, mock_perf):
-        # Header read is fast, body read is slow
-        mock_perf.side_effect = [0.0, 0.01, 0.0, 10.0]
-        stream = io.BytesIO(struct.pack("@I", 10) + b"0123456789")
-        with self.assertRaises(TimeoutError):
-            decode_frame_with_timeout(stream, timeout_ms=100)
-
-    def test_no_timeout_for_fast_frame(self):
-        payload = {"action": "run_shell", "command": "echo hi"}
-        frame = encode_frame(payload)
-        stream = io.BytesIO(frame)
-        decoded = decode_frame_with_timeout(stream, timeout_ms=5000)
-        self.assertEqual(decoded, payload)
 
 
 if __name__ == "__main__":
