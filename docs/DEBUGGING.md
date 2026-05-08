@@ -180,6 +180,7 @@ Manifest V3 service workers are ephemeral. Chrome/Brave terminates them after ~3
    'button[mattooltip*="Send"]'
    'button[data-testid="send-button"]'
    'button.send-button'
+   'button[aria-label*="send"]'
    ```
    If the button is disabled until text is entered, the input events dispatched by `injectResponse` may not be sufficient. Run `triggerInputEvents()` manually in the console to force-enable it.
 
