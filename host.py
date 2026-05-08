@@ -54,7 +54,7 @@ def truncate_output(text, max_bytes=MAX_OUTPUT_SIZE):
     return truncated + f"\n\n[Output truncated: exceeded {max_bytes} bytes]"
 
 
-def respond_success(req_id, meta, output=None, message=None, **kwargs):
+def respond_success(req_id, meta, output=None, message=None, code=None):
     response = {
         'id': req_id,
         'status': 'success',
@@ -64,7 +64,8 @@ def respond_success(req_id, meta, output=None, message=None, **kwargs):
         response['output'] = output
     if message is not None:
         response['message'] = message
-    response.update(kwargs)
+    if code is not None:
+        response['code'] = code
     send_message(response)
 
 
@@ -228,7 +229,7 @@ def handle_git_status(msg):
         )
         output = result.stdout or ""
         if result.stderr:
-            output += f"\n--- Standard Error ---\n{result.stderr}"
+            logging.warning(f"[{req_id}] Git status stderr: {result.stderr}")
         if not output.strip():
             output = f"[Command completed with exit code {result.returncode} and no output]"
         output = truncate_output(output)
@@ -236,8 +237,7 @@ def handle_git_status(msg):
         respond_success(
             req_id,
             {'duration_ms': duration_ms},
-            output=output,
-            code=result.returncode
+            output=output
         )
     except subprocess.TimeoutExpired:
         duration_ms = round((time.perf_counter() - start) * 1000)
@@ -272,7 +272,7 @@ def handle_git_diff(msg):
         )
         output = result.stdout or ""
         if result.stderr:
-            output += f"\n--- Standard Error ---\n{result.stderr}"
+            logging.warning(f"[{req_id}] Git diff stderr: {result.stderr}")
         if not output.strip():
             output = f"[Command completed with exit code {result.returncode} and no output]"
         output = truncate_output(output)
@@ -280,8 +280,7 @@ def handle_git_diff(msg):
         respond_success(
             req_id,
             {'duration_ms': duration_ms},
-            output=output,
-            code=result.returncode
+            output=output
         )
     except subprocess.TimeoutExpired:
         duration_ms = round((time.perf_counter() - start) * 1000)
@@ -343,8 +342,7 @@ def handle_run_python(msg):
         respond_success(
             req_id,
             {'duration_ms': duration_ms},
-            output=output,
-            code=result.returncode
+            output=output
         )
     except subprocess.TimeoutExpired:
         duration_ms = round((time.perf_counter() - start) * 1000)
