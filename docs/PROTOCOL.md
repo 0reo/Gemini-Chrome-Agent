@@ -20,7 +20,7 @@ When you want the agent to perform a local operation, output a **JSON code block
 **Rules:**
 1. The JSON **must** be inside a code block (```json ... ```).
 2. The JSON **must** contain `"action"` with one of the 7 supported action names.
-3. The `"id"` field is optional in your output — if omitted, the extension will generate one before sending to the host. You may include it for traceability.
+3. The `"id"` field is optional in your output — if omitted, the extension will generate one automatically before sending to the host. Including an explicit `id` is recommended for traceability, but not required.
 4. Only **one action per code block**. If you need multiple actions, output multiple code blocks sequentially.
 5. Do not wrap the JSON in explanatory text inside the same code block. Keep the block pure JSON.
 

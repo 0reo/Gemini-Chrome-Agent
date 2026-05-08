@@ -47,9 +47,9 @@
 5. **Test the host directly from the background console**
    In the service worker DevTools console:
    ```js
-   const port = chrome.runtime.connectNative('com.local.gemini_agent');
+   const port = browser.runtime.connectNative('com.local.gemini_agent');
    port.onMessage.addListener(m => console.log('Host says:', m));
-   port.onDisconnect.addListener(() => console.log('Disconnected', chrome.runtime.lastError));
+   port.onDisconnect.addListener(() => console.log('Disconnected', browser.runtime.lastError));
    port.postMessage({id: 'test-1', action: 'run_shell', command: 'echo hello'});
    ```
 
@@ -129,15 +129,15 @@ Manifest V3 service workers are ephemeral. Chrome/Brave terminates them after ~3
 
 ### How the extension handles it
 
-1. **`chrome.storage.session`** persists `lastActiveTabId` across sleep/wake cycles.
+1. **`browser.storage.session`** persists `lastActiveTabId` across sleep/wake cycles.
 2. **Automatic reconnection**: In `background.ts`, if `port` is null when a `SEND_TO_HOST` message arrives, `connectToHost()` is called again.
-3. **`chrome.runtime.onConnect` listener**: Provides a keepalive hook. External long-lived ports (e.g., from the popup) keep the service worker alive while they are connected.
+3. **`browser.runtime.onConnect` listener**: Provides a keepalive hook. External long-lived ports (e.g., from the popup) keep the service worker alive while they are connected.
 
 ### How to verify
 1. Go to `brave://extensions/`, find the extension, click **service worker**.
 2. In the console, run:
    ```js
-   chrome.storage.session.get('lastActiveTabId').then(console.log);
+   browser.storage.session.get('lastActiveTabId').then(console.log);
    ```
 3. Let the worker go inactive (close DevTools, wait 30–60s).
 4. Trigger a new payload. The worker should wake, reconnect to the native host, and route the response using the stored tab ID.
@@ -233,7 +233,7 @@ The popup (`entrypoints/popup/main.ts`) currently shows status and a toggle butt
 
 1. **From the background console:**
    ```js
-   chrome.storage.local.get('agentLogs').then(r => console.log(r.agentLogs));
+   browser.storage.local.get('agentLogs').then(r => console.log(r.agentLogs));
    ```
 
 2. **From the page console (content script context):**

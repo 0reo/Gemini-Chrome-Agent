@@ -231,7 +231,7 @@ All messages between the extension and `host.py` use **Protocol v2**: length-pre
 | `message` | `string` | Response (success) | Human-readable success message (e.g., "File written.") |
 | `error` | `string` | Response (error) | Human-readable error description |
 | `code` | `number` | Response (optional) | Exit code from subprocess |
-| `meta` | `object` | Always | Extension-defined metadata. Currently always contains `duration_ms`. |
+| `meta` | `object` | Always (auto-populated by host) | Extension-defined metadata. Currently always contains `duration_ms`. Factory helpers in `utils/protocol.ts` make this optional at the TypeScript level; the host backfills it if missing. |
 
 ### Native Messaging Frame Encoding
 
