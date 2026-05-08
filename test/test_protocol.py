@@ -18,6 +18,9 @@ import io
 import json
 import struct
 import unittest
+from unittest.mock import patch
+
+import host
 
 MAX_OUTPUT_SIZE = 1024 * 1024  # 1MB — must match host.py
 
@@ -175,6 +178,59 @@ class TestLargePayloadHandling(unittest.TestCase):
         stream = io.BytesIO(frame)
         decoded = decode_frame(stream)
         self.assertEqual(decoded["output"], big_text)
+
+
+class TestActionResponseShapes(unittest.TestCase):
+    """Tests for action-specific response shapes from host.py handlers."""
+
+    @patch('host.send_message')
+    def test_run_shell_response_includes_code(self, mock_send):
+        host.handle_run_shell({'id': 'test-1', 'command': 'echo hello'})
+        mock_send.assert_called_once()
+        response = mock_send.call_args[0][0]
+        self.assertEqual(response['status'], 'success')
+        self.assertIn('code', response)
+        self.assertIn('meta', response)
+        self.assertIn('duration_ms', response['meta'])
+
+    @patch('host.send_message')
+    def test_run_shell_error_response_includes_code(self, mock_send):
+        host.handle_run_shell({'id': 'test-1', 'command': 'exit 42'})
+        mock_send.assert_called_once()
+        response = mock_send.call_args[0][0]
+        self.assertEqual(response['status'], 'success')
+        self.assertIn('code', response)
+        self.assertEqual(response['code'], 42)
+        self.assertIn('meta', response)
+        self.assertIn('duration_ms', response['meta'])
+
+    @patch('host.send_message')
+    def test_git_status_response_excludes_code(self, mock_send):
+        host.handle_git_status({'id': 'test-1', 'filepath': '/tmp'})
+        mock_send.assert_called_once()
+        response = mock_send.call_args[0][0]
+        self.assertNotIn('code', response)
+        self.assertIn('meta', response)
+        self.assertIn('duration_ms', response['meta'])
+
+    @patch('host.send_message')
+    def test_git_diff_response_excludes_code(self, mock_send):
+        host.handle_git_diff({'id': 'test-1', 'filepath': '/tmp'})
+        mock_send.assert_called_once()
+        response = mock_send.call_args[0][0]
+        self.assertNotIn('code', response)
+        self.assertIn('meta', response)
+        self.assertIn('duration_ms', response['meta'])
+
+    @patch('host.send_message')
+    def test_run_python_with_content_includes_code(self, mock_send):
+        host.handle_run_python({'id': 'test-1', 'content': 'print("hello")'})
+        mock_send.assert_called_once()
+        response = mock_send.call_args[0][0]
+        self.assertEqual(response['status'], 'success')
+        self.assertIn('code', response)
+        self.assertIn('meta', response)
+        self.assertIn('duration_ms', response['meta'])
 
 
 if __name__ == "__main__":

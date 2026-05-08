@@ -29,3 +29,6 @@ web-ext.config.ts
 __pycache__/
 *.pyc
 *.pyo
+
+# Test coverage
+coverage/

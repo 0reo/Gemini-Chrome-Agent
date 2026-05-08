@@ -349,46 +349,47 @@ def handle_run_python(msg):
                 pass
 
 
-logging.info("Gemini Host v2 Started")
+if __name__ == '__main__':
+    logging.info("Gemini Host v2 Started")
 
-while True:
-    try:
-        msg = get_message()
-        action = msg.get('action')
-        req_id = msg.get('id', 'unknown')
-        start = time.perf_counter()
-
-        if action == 'run_shell':
-            handle_run_shell(msg)
-        elif action == 'write_file':
-            handle_write_file(msg)
-        elif action == 'read_file':
-            handle_read_file(msg)
-        elif action == 'list_files':
-            handle_list_files(msg)
-        elif action == 'git_status':
-            handle_git_status(msg)
-        elif action == 'git_diff':
-            handle_git_diff(msg)
-        elif action == 'run_python':
-            handle_run_python(msg)
-        else:
-            duration_ms = round((time.perf_counter() - start) * 1000)
-            logging.warning(f"[{req_id}] Unknown action: {action}")
-            respond_error(
-                req_id,
-                {'duration_ms': duration_ms},
-                f'Unknown action: {action}'
-            )
-    except Exception as fatal_error:
-        logging.critical(f"Fatal error in main loop: {fatal_error}")
+    while True:
         try:
-            respond_error(
-                msg.get('id', 'unknown') if 'msg' in dir() else 'unknown',
-                {'duration_ms': 0},
-                str(fatal_error),
-                status='fatal_error'
-            )
-        except Exception:
-            pass
-        sys.exit(1)
+            msg = get_message()
+            action = msg.get('action')
+            req_id = msg.get('id', 'unknown')
+            start = time.perf_counter()
+
+            if action == 'run_shell':
+                handle_run_shell(msg)
+            elif action == 'write_file':
+                handle_write_file(msg)
+            elif action == 'read_file':
+                handle_read_file(msg)
+            elif action == 'list_files':
+                handle_list_files(msg)
+            elif action == 'git_status':
+                handle_git_status(msg)
+            elif action == 'git_diff':
+                handle_git_diff(msg)
+            elif action == 'run_python':
+                handle_run_python(msg)
+            else:
+                duration_ms = round((time.perf_counter() - start) * 1000)
+                logging.warning(f"[{req_id}] Unknown action: {action}")
+                respond_error(
+                    req_id,
+                    {'duration_ms': duration_ms},
+                    f'Unknown action: {action}'
+                )
+        except Exception as fatal_error:
+            logging.critical(f"Fatal error in main loop: {fatal_error}")
+            try:
+                respond_error(
+                    msg.get('id', 'unknown') if 'msg' in dir() else 'unknown',
+                    {'duration_ms': 0},
+                    str(fatal_error),
+                    status='fatal_error'
+                )
+            except Exception:
+                pass
+            sys.exit(1)
