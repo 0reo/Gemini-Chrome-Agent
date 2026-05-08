@@ -4,10 +4,12 @@ const toggleBtn = document.getElementById('toggle-btn');
 
 async function updateUI() {
   const { isAgentPaused } = await chrome.storage.local.get('isAgentPaused');
+  // Default to paused when no state has been stored yet
+  const paused = isAgentPaused !== false;
 
   statusCard.classList.remove('active', 'paused');
 
-  if (isAgentPaused) {
+  if (paused) {
     statusCard.classList.add('paused');
     statusText.textContent = 'Paused';
     toggleBtn.textContent = 'Resume Agent';
@@ -20,7 +22,8 @@ async function updateUI() {
 
 toggleBtn.addEventListener('click', async () => {
   const { isAgentPaused } = await chrome.storage.local.get('isAgentPaused');
-  const newState = !isAgentPaused;
+  const current = isAgentPaused !== false; // default to true (paused)
+  const newState = !current;
   await chrome.storage.local.set({ isAgentPaused: newState });
   updateUI();
 });

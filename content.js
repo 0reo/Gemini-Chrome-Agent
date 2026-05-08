@@ -1,7 +1,7 @@
 // Version: 2.3 - Cooldown & execution gate to prevent runaway loops
 console.log("[Gemini Agent] content script loaded!");
 
-let isAgentPaused = false;
+let isAgentPaused = true;
 let isCooldown = false;
 let cooldownTimer = null;
 let executionsThisMinute = 0;
@@ -16,8 +16,12 @@ const PAGE_LOAD_TIME = Date.now();
 chrome.storage.local.get('isAgentPaused').then(({ isAgentPaused: stored }) => {
     if (stored !== undefined) {
         isAgentPaused = stored;
-        console.log("[Gemini Agent] Initial pause state from storage:", isAgentPaused);
+    } else {
+        // Default to paused on first install / fresh load
+        isAgentPaused = true;
+        chrome.storage.local.set({ isAgentPaused: true });
     }
+    console.log("[Gemini Agent] Initial pause state:", isAgentPaused);
 });
 
 chrome.storage.onChanged.addListener((changes, area) => {
