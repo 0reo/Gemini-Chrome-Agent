@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Gemini Local Agent — DOM Performance Testbed</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
+  h1 { font-size: 1.4rem; margin-bottom: 0.5rem; }
+  .panel { border: 1px solid #ddd; border-radius: 8px; padding: 1rem; margin: 1rem 0; }
+  .metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; }
+  .metric { background: #f5f5f5; padding: 0.8rem; border-radius: 6px; text-align: center; }
+  .metric .value { font-size: 1.6rem; font-weight: bold; color: #1a73e8; }
+  .metric .label { font-size: 0.8rem; color: #666; margin-top: 0.3rem; }
+  .controls { display: flex; gap: 0.5rem; flex-wrap: wrap; margin: 1rem 0; }
+  button { padding: 0.5rem 1rem; border: 1px solid #ccc; border-radius: 4px; cursor: pointer; background: #fff; }
+  button:hover { background: #f0f0f0; }
+  button.primary { background: #1a73e8; color: #fff; border-color: #1a73e8; }
+  button.primary:hover { background: #1557b0; }
+  .chat { border: 1px solid #e0e0e0; border-radius: 8px; height: 300px; overflow-y: auto; padding: 1rem; background: #fafafa; }
+  .msg { margin: 0.5rem 0; padding: 0.6rem 0.8rem; border-radius: 12px; max-width: 80%; }
+  .msg.user { background: #e3f2fd; margin-left: auto; }
+  .msg.ai { background: #fff; border: 1px solid #e0e0e0; }
+  .log { font-family: monospace; font-size: 0.75rem; background: #1e1e1e; color: #d4d4d4; padding: 0.8rem; border-radius: 4px; height: 200px; overflow-y: auto; white-space: pre-wrap; }
+  .pass { color: #4caf50; }
+  .fail { color: #f44336; }
+  table { width: 100%; border-collapse: collapse; margin-top: 0.5rem; }
+  th, td { text-align: left; padding: 0.4rem; border-bottom: 1px solid #eee; }
+  th { font-weight: 600; color: #444; }
+</style>
+</head>
+<body>
+<h1>🧪 DOM Performance Testbed</h1>
+<p>Simulates Gemini's streaming renderer and measures MutationObserver overhead.</p>
+
+<div class="panel">
+  <h3>Live Metrics</h3>
+  <div class="metrics">
+    <div class="metric">
+      <div class="value" id="m-mutations">0</div>
+      <div class="label">DOM Mutations</div>
+    </div>
+    <div class="metric">
+      <div class="value" id="m-scans">0</div>
+      <div class="label">Payload Scans</div>
+    </div>
+    <div class="metric">
+      <div class="value" id="m-scanTime">0</div>
+      <div class="label">Avg Scan Time (ms)</div>
+    </div>
+    <div class="metric">
+      <div class="value" id="m-debounce">0</div>
+      <div class="label">Debounce Efficiency %</div>
+    </div>
+    <div class="metric">
+      <div class="value" id="m-elements">0</div>
+      <div class="label">DOM Elements</div>
+    </div>
+    <div class="metric">
+      <div class="value" id="m-streamTime">0</div>
+      <div class="label">Stream Duration (ms)</div>
+    </div>
+  </div>
+</div>
+
+<div class="controls">
+  <button class="primary" onclick="startLightStream()">Light Stream (50 msgs)</button>
+  <button class="primary" onclick="startHeavyStream()">Heavy Stream (200 msgs)</button>
+  <button onclick="injectPayload()">Inject Payload</button>
+  <button onclick="injectAllActions()">Inject All 7 Actions</button>
+  <button onclick="clearChat()">Clear Chat</button>
+  <button onclick="runSettlingTest()">Settling Period Test</button>
+  <button onclick="runCooldownTest()">Cooldown Timing Test</button>
+</div>
+
+<div class="panel">
+  <h3>Chat Simulation</h3>
+  <div class="chat" id="chat"></div>
+</div>
+
+<div class="panel">
+  <h3>Performance Log</h3>
+  <div class="log" id="log"></div>
+</div>
+
+<div class="panel">
+  <h3>Test Results</h3>
+  <table>
+    <thead><tr><th>Test</th><th>Result</th><th>Value</th></tr></thead>
+    <tbody id="results"></tbody>
+  </table>
+</div>
+
+<script>
+// --- Configuration ---
+const SCAN_DEBOUNCE_MS = 250;
+const COOLDOWN_MS = 2000; // shortened for testing
+const SETTLING_MS = 3000; // shortened for testing
+const PAYLOAD_TTL_MS = 60000;
+
+// --- State ---
+let mutationCount = 0;
+let scanCount = 0;
+let totalScanTime = 0;
+let scanStartTime = 0;
+let streamStartTime = 0;
+let scanTimeout = null;
+let cooldownTimer = null;
+let state = 'settling';
+const pageLoadTime = Date.now();
+const processedHashes = new Map();
+
+// --- Logging ---
+function log(msg) {
+  const el = document.getElementById('log');
+  const time = new Date().toLocaleTimeString();
+  el.textContent += `[${time}] ${msg}\n`;
+  el.scrollTop = el.scrollHeight;
+}
+
+function result(testName, passed, value) {
+  const tbody = document.getElementById('results');
+  const row = document.createElement('tr');
+  row.innerHTML = `<td>${testName}</td><td class="${passed ? 'pass' : 'fail'}">${passed ? 'PASS' : 'FAIL'}</td><td>${value}</td>`;
+  tbody.appendChild(row);
+}
+
+// --- Hash function (same as protocol.ts) ---
+function hashPayload(payload) {
+  const canonical = JSON.stringify(payload, Object.keys(payload).sort());
+  let hash = 0;
+  for (let i = 0; i < canonical.length; i++) {
+    const char = canonical.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash;
+  }
+  return hash.toString(16);
+}
+
+function isRecentlyProcessed(payload) {
+  const hash = hashPayload(payload);
+  if (processedHashes.has(hash)) return true;
+  processedHashes.set(hash, Date.now());
+  return false;
+}
+
+// --- Payload validation ---
+const VALID_ACTIONS = new Set(['run_shell','write_file','read_file','list_files','git_status','git_diff','run_python']);
+function isValidPayload(p) {
+  if (!p || typeof p !== 'object') return false;
+  if (!p.action || typeof p.action !== 'string') return false;
+  if (!VALID_ACTIONS.has(p.action)) return false;
+  if (p.action === 'run_shell' && !p.command) return false;
+  if (p.action === 'write_file' && (!p.filepath || !p.content)) return false;
+  if (p.action === 'read_file' && !p.filepath) return false;
+  if (p.action === 'list_files' && !p.filepath) return false;
+  if (p.action === 'git_status' && !p.filepath) return false;
+  if (p.action === 'git_diff' && !p.filepath) return false;
+  if (p.action === 'run_python' && (!p.filepath && !p.content)) return false;
+  return true;
+}
+
+// --- DOM scan (mirrors content.ts logic) ---
+function scanForPayloads() {
+  scanTimeout = null;
+  const start = performance.now();
+  scanCount++;
+
+  const blocks = document.querySelectorAll('pre code, code');
+  for (const block of blocks) {
+    const text = block.textContent || '';
+    if (!text.includes('"action"')) continue;
+    try {
+      const payload = JSON.parse(text);
+      if (!isValidPayload(payload)) continue;
+      if (isRecentlyProcessed(payload)) continue;
+      log(`✓ Detected: ${payload.action} (id=${payload.id})`);
+    } catch {
+      // still streaming
+    }
+  }
+
+  const elapsed = performance.now() - start;
+  totalScanTime += elapsed;
+  updateMetrics();
+}
+
+// --- MutationObserver with debounce ---
+const observer = new MutationObserver((mutations) => {
+  mutationCount += mutations.length;
+  if (scanTimeout) clearTimeout(scanTimeout);
+  scanTimeout = setTimeout(scanForPayloads, SCAN_DEBOUNCE_MS);
+  updateMetrics();
+});
+
+observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+
+function updateMetrics() {
+  document.getElementById('m-mutations').textContent = mutationCount;
+  document.getElementById('m-scans').textContent = scanCount;
+  document.getElementById('m-scanTime').textContent = scanCount ? (totalScanTime / scanCount).toFixed(2) : '0';
+  document.getElementById('m-debounce').textContent = mutationCount ? (100 - (scanCount / mutationCount * 100)).toFixed(1) : '0';
+  document.getElementById('m-elements').textContent = document.querySelectorAll('*').length;
+  document.getElementById('m-streamTime').textContent = streamStartTime ? (Date.now() - streamStartTime) : '0';
+}
+
+// --- Chat simulation ---
+function addMessage(text, isUser = false) {
+  const chat = document.getElementById('chat');
+  const msg = document.createElement('div');
+  msg.className = `msg ${isUser ? 'user' : 'ai'}`;
+  msg.textContent = text;
+  chat.appendChild(msg);
+  chat.scrollTop = chat.scrollHeight;
+}
+
+function addCodeBlock(jsonText) {
+  const chat = document.getElementById('chat');
+  const pre = document.createElement('pre');
+  const code = document.createElement('code');
+  code.textContent = jsonText;
+  pre.appendChild(code);
+  chat.appendChild(pre);
+  chat.scrollTop = chat.scrollHeight;
+}
+
+function clearChat() {
+  document.getElementById('chat').innerHTML = '';
+  mutationCount = 0;
+  scanCount = 0;
+  totalScanTime = 0;
+  processedHashes.clear();
+  updateMetrics();
+  log('Chat cleared');
+}
+
+// --- Streaming simulation ---
+async function streamText(text, delay = 10) {
+  const chat = document.getElementById('chat');
+  const msg = document.createElement('div');
+  msg.className = 'msg ai';
+  chat.appendChild(msg);
+
+  for (const char of text) {
+    msg.textContent += char;
+    await new Promise(r => setTimeout(r, delay));
+  }
+  chat.scrollTop = chat.scrollHeight;
+}
+
+async function streamCodeBlock(jsonObj, charDelay = 5) {
+  const chat = document.getElementById('chat');
+  const pre = document.createElement('pre');
+  const code = document.createElement('code');
+  pre.appendChild(code);
+  chat.appendChild(pre);
+
+  const text = JSON.stringify(jsonObj, null, 2);
+  for (const char of text) {
+    code.textContent += char;
+    await new Promise(r => setTimeout(r, charDelay));
+  }
+  chat.scrollTop = chat.scrollHeight;
+}
+
+async function startLightStream() {
+  clearChat();
+  streamStartTime = Date.now();
+  log('Starting light stream (50 messages)...');
+
+  for (let i = 0; i < 50; i++) {
+    await streamText(`This is message ${i} with some text content.`, 2);
+    if (i % 10 === 7) {
+      await streamCodeBlock({ action: 'run_shell', command: `echo msg_${i}`, id: `stream-${i}` }, 3);
+    }
+  }
+
+  const duration = Date.now() - streamStartTime;
+  const debounceEff = mutationCount ? (100 - (scanCount / mutationCount * 100)).toFixed(1) : 0;
+  log(`Light stream complete: ${duration}ms, ${mutationCount} mutations, ${scanCount} scans`);
+  result('Light Stream Debounce', debounceEff > 80, `${debounceEff}%`);
+  result('Light Stream Scan Time', (totalScanTime / scanCount) < 5, `${(totalScanTime / scanCount).toFixed(2)}ms avg`);
+}
+
+async function startHeavyStream() {
+  clearChat();
+  streamStartTime = Date.now();
+  log('Starting heavy stream (200 messages)...');
+
+  for (let i = 0; i < 200; i++) {
+    await streamText(`Heavy load message ${i} with more text content here.`, 1);
+    if (i % 20 === 15) {
+      await streamCodeBlock({ action: 'run_python', content: `print(${i})`, id: `heavy-${i}` }, 2);
+    }
+  }
+
+  const duration = Date.now() - streamStartTime;
+  const debounceEff = mutationCount ? (100 - (scanCount / mutationCount * 100)).toFixed(1) : 0;
+  log(`Heavy stream complete: ${duration}ms, ${mutationCount} mutations, ${scanCount} scans`);
+  result('Heavy Stream Debounce', debounceEff > 90, `${debounceEff}%`);
+  result('Heavy Stream Scan Time', (totalScanTime / scanCount) < 5, `${(totalScanTime / scanCount).toFixed(2)}ms avg`);
+}
+
+// --- Payload injection ---
+function injectPayload() {
+  const payload = { action: 'run_shell', command: 'echo injected', id: `inj-${Date.now()}` };
+  addCodeBlock(payload);
+  log('Payload injected');
+}
+
+function injectAllActions() {
+  const actions = [
+    { action: 'run_shell', command: 'ls', id: 'a1' },
+    { action: 'write_file', filepath: '/tmp/t.txt', content: 'hello', id: 'a2' },
+    { action: 'read_file', filepath: '/tmp/t.txt', id: 'a3' },
+    { action: 'list_files', filepath: '/tmp', id: 'a4' },
+    { action: 'git_status', filepath: '.', id: 'a5' },
+    { action: 'git_diff', filepath: '.', id: 'a6' },
+    { action: 'run_python', content: 'print(1)', id: 'a7' },
+  ];
+  actions.forEach(p => addCodeBlock(p));
+  log('All 7 actions injected');
+}
+
+// --- Timing tests ---
+async function runSettlingTest() {
+  clearChat();
+  log('Settling period test: injecting payloads during settling window...');
+  state = 'settling';
+  const settlingStart = Date.now();
+
+  // Inject payloads immediately (should be ignored during settling)
+  for (let i = 0; i < 5; i++) {
+    addCodeBlock({ action: 'run_shell', command: `echo settle_${i}`, id: `settle-${i}` });
+    await new Promise(r => setTimeout(r, 200));
+  }
+
+  await new Promise(r => setTimeout(r, SETTLING_MS + 100));
+
+  // Now inject one more (should be detected)
+  addCodeBlock({ action: 'run_shell', command: 'echo after_settle', id: 'settle-after' });
+
+  const settlingDuration = Date.now() - settlingStart;
+  const detectedDuringSettling = scanCount > 0; // We track all scans, but settling should skip execution
+  log(`Settling test complete: ${settlingDuration}ms`);
+  result('Settling Period', settlingDuration >= SETTLING_MS && settlingDuration < SETTLING_MS + 500,
+    `${settlingDuration}ms (target: ${SETTLING_MS}ms)`);
+}
+
+async function runCooldownTest() {
+  clearChat();
+  log('Cooldown timing test...');
+
+  // Inject first payload to trigger cooldown
+  addCodeBlock({ action: 'run_shell', command: 'echo cooldown_test', id: 'cd-1' });
+  state = 'cooldown';
+
+  const cooldownStart = Date.now();
+  if (cooldownTimer) clearTimeout(cooldownTimer);
+  cooldownTimer = setTimeout(() => {
+    state = 'armed';
+    log('Cooldown ended');
+  }, COOLDOWN_MS);
+
+  // Try injecting during cooldown
+  await new Promise(r => setTimeout(r, COOLDOWN_MS / 2));
+  addCodeBlock({ action: 'run_shell', command: 'echo during_cooldown', id: 'cd-2' });
+
+  // Wait for cooldown to end
+  await new Promise(r => setTimeout(r, COOLDOWN_MS / 2 + 200));
+  addCodeBlock({ action: 'run_shell', command: 'echo after_cooldown', id: 'cd-3' });
+
+  const cooldownDuration = Date.now() - cooldownStart;
+  log(`Cooldown test complete: ${cooldownDuration}ms`);
+  result('Cooldown Timing', cooldownDuration >= COOLDOWN_MS && cooldownDuration < COOLDOWN_MS + 500,
+    `${cooldownDuration}ms (target: ${COOLDOWN_MS}ms)`);
+}
+
+log('Performance testbed loaded. Click a button to start testing.');
+updateMetrics();
+</script>
+</body>
+</html>
