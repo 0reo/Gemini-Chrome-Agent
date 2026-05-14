@@ -10,6 +10,7 @@ export const CONFIG = {
   LOG_SERVER_URL: 'http://localhost:9999',
   LOG_BUFFER_SIZE: 1000,
   NATIVE_HOST_NAME: 'com.local.gemini_agent',
+  AUTO_SUBMIT: true,
 } as const;
 
 export const VALID_ACTIONS: Set<string> = new Set([

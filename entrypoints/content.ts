@@ -19,10 +19,13 @@ export default defineContentScript({
     let cooldownMs: number = CONFIG.COOLDOWN_MS;
     let maxPerMinute: number = CONFIG.MAX_PER_MINUTE;
     let settlingPeriodMs: number = CONFIG.SETTLING_PERIOD_MS;
+    let autoSubmit: boolean = CONFIG.AUTO_SUBMIT;
 
     async function loadSettings(): Promise<void> {
       try {
-        const result = await browser.storage.local.get(['cooldownSeconds', 'maxPerMinute', 'settlingSeconds']);
+        const result = await browser.storage.local.get([
+          'cooldownSeconds', 'maxPerMinute', 'settlingSeconds', 'autoSubmit'
+        ]);
         if (typeof result.cooldownSeconds === 'number') {
           cooldownMs = result.cooldownSeconds * 1000;
         }
@@ -31,6 +34,9 @@ export default defineContentScript({
         }
         if (typeof result.settlingSeconds === 'number') {
           settlingPeriodMs = result.settlingSeconds * 1000;
+        }
+        if (typeof result.autoSubmit === 'boolean') {
+          autoSubmit = result.autoSubmit;
         }
       } catch {
         // Fallback to CONFIG defaults already set
@@ -133,6 +139,14 @@ export default defineContentScript({
           info('Settling period setting updated', { seconds: val });
         }
       }
+
+      if (changes.autoSubmit) {
+        const val = changes.autoSubmit.newValue;
+        if (typeof val === 'boolean') {
+          autoSubmit = val;
+          info('Auto-submit setting updated', { autoSubmit: val });
+        }
+      }
     });
 
     // Keyboard shortcut
@@ -195,7 +209,9 @@ export default defineContentScript({
           if (!payload.id) {
             payload.id = generateId();
           }
-          info('Executing action', { action: payload.action, id: payload.id });
+          // Capture chat context for debugging
+          const context = extractChatContext(block);
+          info('Executing action', { action: payload.action, id: payload.id, context });
           browser.runtime.sendMessage({ type: 'SEND_TO_HOST', payload } as ExtensionMessage);
           setCooldown();
           trackExecution();
@@ -203,6 +219,29 @@ export default defineContentScript({
           // JSON parse failed — block is still streaming
         }
       }
+    }
+
+    // Extract surrounding chat context for a given code block element
+    function extractChatContext(block: Element): string {
+      try {
+        // Try to find the parent message container
+        let el: Element | null = block;
+        for (let i = 0; i < 6 && el; i++) {
+          el = el.parentElement;
+          if (el && (el.getAttribute('data-test-id') || el.className?.includes('message'))) {
+            const text = (el.textContent || '').substring(0, 200).replace(/\s+/g, ' ');
+            return text;
+          }
+        }
+        // Fallback: get text from siblings/parents
+        const parent = block.parentElement;
+        if (parent) {
+          return (parent.textContent || '').substring(0, 200).replace(/\s+/g, ' ');
+        }
+      } catch {
+        // Ignore extraction errors
+      }
+      return '';
     }
 
     markExistingBlocks();
@@ -216,8 +255,10 @@ export default defineContentScript({
           return;
         }
         if (message.data) {
-          injectResponse(message.data);
-          triggerSend(() => isPaused());
+          const injected = injectResponse(message.data);
+          if (injected) {
+            triggerSend(() => isPaused(), autoSubmit);
+          }
         }
       }
     });

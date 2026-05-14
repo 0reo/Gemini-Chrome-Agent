@@ -1,6 +1,39 @@
 import { CONFIG } from './config';
 import { info, warn, error } from './logger';
 
+/**
+ * Check if the user is currently typing in the given input element.
+ * Returns true if the element is focused and has user-typed content.
+ */
+function isUserActivelyTyping(el: HTMLElement): boolean {
+  // Element must be the currently focused element
+  if (document.activeElement !== el) return false;
+
+  const text = getElementText(el);
+  // If empty or only whitespace, user isn't actively typing
+  if (!text || text.trim().length === 0) return false;
+
+  // If the text is only a previous system result, the user didn't type it
+  if (text.trimStart().startsWith('System Result:')) return false;
+
+  return true;
+}
+
+function getElementText(el: HTMLElement): string {
+  if (el instanceof HTMLTextAreaElement) {
+    return el.value;
+  }
+  return el.innerText || el.textContent || '';
+}
+
+function setElementText(el: HTMLElement, text: string): void {
+  if (el instanceof HTMLTextAreaElement) {
+    el.value = text;
+  } else {
+    el.innerText = text;
+  }
+}
+
 export function injectResponse(data: { output?: string; error?: string; message?: string }): boolean {
   const outputText = data?.output || data?.error || data?.message || 'Command completed.';
   const fullText = `System Result:\n${outputText}`;
@@ -14,9 +47,14 @@ export function injectResponse(data: { output?: string; error?: string; message?
 
   for (const strategy of strategies) {
     try {
-      if (strategy()) {
+      const result = strategy();
+      if (result === 'injected') {
         info('Response injected successfully');
         return true;
+      }
+      if (result === 'skipped_user_typing') {
+        warn('Response not injected: user is actively typing in the input');
+        return false;
       }
     } catch (e) {
       warn('Injection strategy failed', { error: (e as Error).message });
@@ -27,11 +65,17 @@ export function injectResponse(data: { output?: string; error?: string; message?
   return false;
 }
 
-function injectIntoContentEditable(element: Element | null, text: string): boolean {
+type InjectionResult = 'injected' | 'skipped_user_typing' | false;
+
+function injectIntoContentEditable(element: Element | null, text: string): InjectionResult {
   if (!element) return false;
   const el = element as HTMLElement;
 
-  // Safer approach: use Selection API instead of deprecated execCommand
+  // CRITICAL: Do not overwrite what the user is currently typing
+  if (isUserActivelyTyping(el)) {
+    return 'skipped_user_typing';
+  }
+
   el.focus();
   const selection = window.getSelection();
   const range = document.createRange();
@@ -55,20 +99,31 @@ function injectIntoContentEditable(element: Element | null, text: string): boole
   // Minimal event dispatch to trigger React state updates
   el.dispatchEvent(new InputEvent('input', { bubbles: true, data: text }));
 
-  return true;
+  return 'injected';
 }
 
-function injectIntoTextarea(element: Element | null, text: string): boolean {
+function injectIntoTextarea(element: Element | null, text: string): InjectionResult {
   if (!element) return false;
   const el = element as HTMLTextAreaElement;
+
+  // CRITICAL: Do not overwrite what the user is currently typing
+  if (isUserActivelyTyping(el)) {
+    return 'skipped_user_typing';
+  }
+
   el.focus();
   el.value = text;
   el.dispatchEvent(new Event('input', { bubbles: true }));
   el.dispatchEvent(new Event('change', { bubbles: true }));
-  return true;
+  return 'injected';
 }
 
-export function triggerSend(isPaused: () => boolean): void {
+export function triggerSend(isPaused: () => boolean, shouldAutoSubmit: boolean): void {
+  if (!shouldAutoSubmit) {
+    info('Auto-submit disabled; response left in input for user review');
+    return;
+  }
+
   const buttonSelectors = [
     'button[aria-label="Send message"]',
     'button[aria-label*="Send"]',

@@ -7,6 +7,7 @@ const DEFAULTS = {
   cooldownSeconds: 15,
   maxPerMinute: 5,
   settlingSeconds: 5,
+  autoSubmit: true,
 };
 
 function render(
@@ -15,7 +16,8 @@ function render(
   maxPerMinute: number,
   settlingSeconds: number,
   logsCount: number,
-  advancedOpen: boolean
+  advancedOpen: boolean,
+  autoSubmit: boolean
 ) {
   const isPaused = status === 'paused';
   app.innerHTML = `
@@ -32,6 +34,10 @@ function render(
       <div class="shortcut-hint">Alt+Shift+K to toggle</div>
 
       <div class="settings-section">
+        <label class="setting-row toggle-row">
+          <span class="setting-label">Auto-submit responses</span>
+          <input id="auto-submit-input" type="checkbox" ${autoSubmit ? 'checked' : ''} />
+        </label>
         <label class="setting-row">
           <span class="setting-label">Cooldown</span>
           <input id="cooldown-input" type="range" min="5" max="60" value="${cooldownSeconds}" />
@@ -67,7 +73,13 @@ function render(
     const { isAgentPaused } = await browser.storage.local.get('isAgentPaused');
     const current = isAgentPaused !== false;
     await browser.storage.local.set({ isAgentPaused: !current });
-    render(!current ? 'paused' : 'active', cooldownSeconds, maxPerMinute, settlingSeconds, logsCount, advancedOpen);
+    render(!current ? 'paused' : 'active', cooldownSeconds, maxPerMinute, settlingSeconds, logsCount, advancedOpen, autoSubmit);
+  });
+
+  const autoSubmitInput = document.getElementById('auto-submit-input') as HTMLInputElement | null;
+  autoSubmitInput?.addEventListener('change', async () => {
+    const val = autoSubmitInput.checked;
+    await browser.storage.local.set({ autoSubmit: val });
   });
 
   let cooldownDebounce: number | null = null;
@@ -142,13 +154,14 @@ function render(
 }
 
 async function init() {
-  const { isAgentPaused, cooldownSeconds, maxPerMinute, settlingSeconds, popupAdvancedOpen } =
+  const { isAgentPaused, cooldownSeconds, maxPerMinute, settlingSeconds, popupAdvancedOpen, autoSubmit } =
     await browser.storage.local.get([
       'isAgentPaused',
       'cooldownSeconds',
       'maxPerMinute',
       'settlingSeconds',
       'popupAdvancedOpen',
+      'autoSubmit',
     ]);
 
   const logs = await getLogs();
@@ -158,7 +171,8 @@ async function init() {
     typeof maxPerMinute === 'number' ? maxPerMinute : DEFAULTS.maxPerMinute,
     typeof settlingSeconds === 'number' ? settlingSeconds : DEFAULTS.settlingSeconds,
     logs.length,
-    popupAdvancedOpen === true
+    popupAdvancedOpen === true,
+    typeof autoSubmit === 'boolean' ? autoSubmit : DEFAULTS.autoSubmit
   );
 }
 
