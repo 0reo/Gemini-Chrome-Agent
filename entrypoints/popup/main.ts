@@ -70,11 +70,15 @@ function render(
     render(!current ? 'paused' : 'active', cooldownSeconds, maxPerMinute, settlingSeconds, logsCount, advancedOpen);
   });
 
+  let cooldownDebounce: number | null = null;
   const cooldownInput = document.getElementById('cooldown-input') as HTMLInputElement | null;
   cooldownInput?.addEventListener('input', async (e) => {
     const val = parseInt((e.target as HTMLInputElement).value, 10);
     document.getElementById('cooldown-value')!.textContent = `${val}s`;
-    await browser.storage.local.set({ cooldownSeconds: val });
+    if (cooldownDebounce) clearTimeout(cooldownDebounce);
+    cooldownDebounce = window.setTimeout(() => {
+      browser.storage.local.set({ cooldownSeconds: val });
+    }, 300);
   });
 
   const exportBtn = document.getElementById('export-btn');
@@ -106,18 +110,26 @@ function render(
     browser.storage.local.set({ popupAdvancedOpen: next });
   });
 
+  let rateLimitDebounce: number | null = null;
   const rateLimitInput = document.getElementById('rate-limit-input') as HTMLInputElement | null;
   rateLimitInput?.addEventListener('input', async (e) => {
     const val = parseInt((e.target as HTMLInputElement).value, 10);
     document.getElementById('rate-limit-value')!.textContent = `${val}/min`;
-    await browser.storage.local.set({ maxPerMinute: val });
+    if (rateLimitDebounce) clearTimeout(rateLimitDebounce);
+    rateLimitDebounce = window.setTimeout(() => {
+      browser.storage.local.set({ maxPerMinute: val });
+    }, 300);
   });
 
+  let settlingDebounce: number | null = null;
   const settlingInput = document.getElementById('settling-input') as HTMLInputElement | null;
   settlingInput?.addEventListener('input', async (e) => {
     const val = parseInt((e.target as HTMLInputElement).value, 10);
     document.getElementById('settling-value')!.textContent = `${val}s`;
-    await browser.storage.local.set({ settlingSeconds: val });
+    if (settlingDebounce) clearTimeout(settlingDebounce);
+    settlingDebounce = window.setTimeout(() => {
+      browser.storage.local.set({ settlingSeconds: val });
+    }, 300);
   });
 
   const clearLogsBtn = document.getElementById('clear-logs-btn');

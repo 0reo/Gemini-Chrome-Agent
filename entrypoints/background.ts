@@ -53,7 +53,7 @@ export default defineBackground(() => {
   }
 
   function setPendingTimeout(id: string): void {
-    const timer = window.setTimeout(() => {
+    const timer = self.setTimeout(() => {
       pendingResponses.delete(id);
       warn('Request timed out waiting for host response', { id });
     }, 60000);
@@ -63,7 +63,7 @@ export default defineBackground(() => {
   function clearPendingTimeout(id: string): void {
     const timer = pendingResponses.get(id);
     if (timer) {
-      clearTimeout(timer);
+      self.clearTimeout(timer);
       pendingResponses.delete(id);
     }
   }

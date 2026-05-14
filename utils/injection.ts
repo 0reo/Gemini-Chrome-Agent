@@ -31,34 +31,29 @@ function injectIntoContentEditable(element: Element | null, text: string): boole
   if (!element) return false;
   const el = element as HTMLElement;
 
+  // Safer approach: use Selection API instead of deprecated execCommand
   el.focus();
-  document.execCommand('selectAll', false, null);
-  document.execCommand('delete', false, null);
+  const selection = window.getSelection();
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  selection?.removeAllRanges();
+  selection?.addRange(range);
 
-  // Primary: DataTransfer paste simulation (React-compatible)
-  const dt = new DataTransfer();
-  dt.setData('text/plain', text);
-  const pasteEvent = new ClipboardEvent('paste', {
-    clipboardData: dt,
-    bubbles: true,
-    cancelable: true,
-  });
-  el.dispatchEvent(pasteEvent);
+  // Delete current content
+  range.deleteContents();
 
-  // Fallback 1: execCommand insertText
-  if (el.innerText.length < 5) {
-    document.execCommand('insertText', false, text);
-  }
+  // Insert new text node
+  const textNode = document.createTextNode(text);
+  range.insertNode(textNode);
 
-  // Fallback 2: direct innerText assignment
-  if (el.innerText.length < 5) {
-    el.innerText = text;
-  }
+  // Move cursor to end
+  range.selectNodeContents(textNode);
+  range.collapse(false);
+  selection?.removeAllRanges();
+  selection?.addRange(range);
 
-  // Trigger React state updates
-  ['input', 'change', 'compositionend', 'keyup', 'keydown'].forEach((type) => {
-    el.dispatchEvent(new Event(type, { bubbles: true }));
-  });
+  // Minimal event dispatch to trigger React state updates
+  el.dispatchEvent(new InputEvent('input', { bubbles: true, data: text }));
 
   return true;
 }
@@ -115,7 +110,10 @@ export function triggerSend(isPaused: () => boolean): void {
       return;
     }
 
-    triggerInputEvents();
+    // Only trigger input events for the first few attempts, then wait quietly
+    if (attempts < 5) {
+      triggerInputEvents();
+    }
 
     if (++attempts >= CONFIG.MAX_SEND_ATTEMPTS) {
       clearInterval(interval);
@@ -129,8 +127,6 @@ function triggerInputEvents(): void {
     'rich-textarea [contenteditable="true"], [role="textbox"][contenteditable="true"], .ql-editor, textarea'
   );
   inputs.forEach((el) => {
-    el.dispatchEvent(new Event('input', { bubbles: true }));
-    el.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true }));
-    el.dispatchEvent(new KeyboardEvent('keyup', { key: 'a', bubbles: true }));
+    el.dispatchEvent(new InputEvent('input', { bubbles: true }));
   });
 }
