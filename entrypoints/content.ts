@@ -245,6 +245,8 @@ export default defineContentScript({
     // --- Response Injection ---
     browser.runtime.onMessage.addListener((message: ExtensionMessage) => {
       if (message.type === 'HOST_RESPONSE') {
+        // Attach chunks are reassembled and completed regardless of pause state:
+        // once files have been sent to the host, finish the round trip.
         if (message.data?.status === 'attach' && message.data.attach) {
           const id = message.data.id;
           let asm = attachAssemblers.get(id);
@@ -328,11 +330,13 @@ export default defineContentScript({
       if (ctx.source === 'popup') return; // stage only
 
       // Gemini-driven: inject prompt (or a default summary) then honor auto-submit.
+      // injectText returns false when the user is actively typing (input-hijack guard);
+      // in that case we must NOT auto-submit, or we'd send the user's own text.
       const names = result.files.map((f) => f.filename).join(', ');
       const promptText = (ctx.prompt && ctx.prompt.trim()) || `Attached ${result.files.length} file(s): ${names}`;
-      injectText(promptText);
+      const injected = injectText(promptText);
       const { autoSubmit } = await browser.storage.local.get('autoSubmit').catch(() => ({ autoSubmit: true }));
-      if (autoSubmit !== false) triggerSend();
+      if (injected && autoSubmit !== false) triggerSend();
     }
 
     info('Content script loaded');
