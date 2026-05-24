@@ -3,6 +3,7 @@ import base64
 import tempfile
 import unittest
 
+import host
 from host import read_file_b64, chunk_b64
 
 
@@ -45,6 +46,29 @@ class TestChunkB64(unittest.TestCase):
 
     def test_empty_string(self):
         self.assertEqual(chunk_b64('', 256), [])
+
+
+class TestHandleAttachFilesZeroByte(unittest.TestCase):
+    def test_zero_byte_file_sends_one_empty_chunk_then_complete(self):
+        with tempfile.NamedTemporaryFile('wb', suffix='.txt', delete=False) as f:
+            path = f.name  # zero bytes written
+        sent = []
+        orig = host.send_message
+        host.send_message = lambda m: sent.append(m)
+        try:
+            host.handle_attach_files({'id': 'z1', 'filepaths': [path]})
+        finally:
+            host.send_message = orig
+            os.unlink(path)
+
+        chunks = [m for m in sent if m['attach']['kind'] == 'chunk']
+        completes = [m for m in sent if m['attach']['kind'] == 'complete']
+        self.assertEqual(len(chunks), 1)
+        self.assertEqual(chunks[0]['attach']['chunkCount'], 1)
+        self.assertEqual(chunks[0]['attach']['data'], '')
+        self.assertEqual(chunks[0]['attach']['fileIndex'], 0)
+        self.assertEqual(len(completes), 1)
+        self.assertEqual(completes[0]['attach']['fileCount'], 1)
 
 
 if __name__ == '__main__':
