@@ -3,7 +3,7 @@ import { info, warn, error } from '@/utils/logger';
 import type { ExtensionMessage, HostResponse } from '@/utils/types';
 
 export default defineBackground(() => {
-  let port: browser.runtime.Port | null = null;
+  let port: Browser.runtime.Port | null = null;
   const pendingResponses = new Map<string, number>();
 
   function connectToHost(): void {
