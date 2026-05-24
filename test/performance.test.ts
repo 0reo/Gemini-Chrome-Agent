@@ -22,7 +22,7 @@ describe('Performance: hashPayload', () => {
   it('hashes large payloads (1KB) in under 1ms each', () => {
     const largePayload: AgentPayload = {
       action: 'run_python',
-      code: 'x = "' + 'a'.repeat(1000) + '"',
+      content: 'x = "' + 'a'.repeat(1000) + '"',
       id: 'large-test',
     };
 
@@ -87,12 +87,12 @@ describe('Performance: dedup memory', () => {
 describe('Performance: isValidPayload', () => {
   const validPayloads: AgentPayload[] = [
     { action: 'run_shell', command: 'ls', id: '1' },
-    { action: 'write_file', path: '/tmp/test.txt', content: 'hello', id: '2' },
-    { action: 'read_file', path: '/tmp/test.txt', id: '3' },
-    { action: 'list_files', path: '/tmp', id: '4' },
-    { action: 'git_status', path: '/repo', id: '5' },
-    { action: 'git_diff', path: '/repo', id: '6' },
-    { action: 'run_python', code: 'print(1)', id: '7' },
+    { action: 'write_file', filepath: '/tmp/test.txt', content: 'hello', id: '2' },
+    { action: 'read_file', filepath: '/tmp/test.txt', id: '3' },
+    { action: 'list_files', filepath: '/tmp', id: '4' },
+    { action: 'git_status', filepath: '/repo', id: '5' },
+    { action: 'git_diff', filepath: '/repo', id: '6' },
+    { action: 'run_python', content: 'print(1)', id: '7' },
   ];
 
   it('validates 7 actions in under 1ms total', () => {
@@ -113,7 +113,7 @@ describe('Performance: isValidPayload', () => {
       {},
       { action: 'unknown' },
       { action: 'run_shell' }, // missing command
-      { action: 'write_file', path: '/tmp' }, // missing content
+      { action: 'write_file', filepath: '/tmp' }, // missing content
     ];
 
     const start = performance.now();
