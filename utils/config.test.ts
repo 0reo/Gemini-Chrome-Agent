@@ -12,6 +12,8 @@ describe('CONFIG', () => {
       'SCAN_DEBOUNCE_MS',
       'SEND_POLL_INTERVAL_MS',
       'SEND_READY_TIMEOUT_MS',
+      'ATTACH_MAX_BYTES',
+      'ATTACH_CHUNK_SIZE',
       'LOG_BUFFER_SIZE',
     ] as const;
 
@@ -24,7 +26,7 @@ describe('CONFIG', () => {
 });
 
 describe('VALID_ACTIONS', () => {
-  it('contains all 7 actions', () => {
+  it('contains all 8 actions', () => {
     const expected = [
       'run_shell',
       'write_file',
@@ -33,10 +35,11 @@ describe('VALID_ACTIONS', () => {
       'git_status',
       'git_diff',
       'run_python',
+      'attach_files',
     ];
     for (const action of expected) {
       expect(VALID_ACTIONS.has(action)).toBe(true);
     }
-    expect(VALID_ACTIONS.size).toBe(7);
+    expect(VALID_ACTIONS.size).toBe(8);
   });
 });

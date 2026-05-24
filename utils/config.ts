@@ -7,6 +7,8 @@ export const CONFIG = {
   SCAN_DEBOUNCE_MS: 250,
   SEND_POLL_INTERVAL_MS: 100,
   SEND_READY_TIMEOUT_MS: 2000,
+  ATTACH_MAX_BYTES: 25 * 1024 * 1024,
+  ATTACH_CHUNK_SIZE: 512 * 1024,
   LOG_SERVER_URL: 'http://localhost:9999',
   LOG_BUFFER_SIZE: 1000,
   NATIVE_HOST_NAME: 'com.local.gemini_agent',
@@ -20,4 +22,5 @@ export const VALID_ACTIONS: Set<string> = new Set([
   'git_status',
   'git_diff',
   'run_python',
+  'attach_files',
 ]);

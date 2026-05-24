@@ -160,3 +160,16 @@ describe('createErrorResponse', () => {
     });
   });
 });
+
+describe('isValidPayload: attach_files', () => {
+  it('accepts a non-empty filepaths array', () => {
+    expect(isValidPayload({ action: 'attach_files', filepaths: ['/a.py'], id: '1' })).toBe(true);
+    expect(isValidPayload({ action: 'attach_files', filepaths: ['/a.py', '/b.png'], prompt: 'go', id: '2' })).toBe(true);
+  });
+  it('rejects missing/empty/invalid filepaths', () => {
+    expect(isValidPayload({ action: 'attach_files', id: '3' })).toBe(false);
+    expect(isValidPayload({ action: 'attach_files', filepaths: [], id: '4' })).toBe(false);
+    expect(isValidPayload({ action: 'attach_files', filepaths: [1, 2], id: '5' })).toBe(false);
+    expect(isValidPayload({ action: 'attach_files', filepaths: [''], id: '6' })).toBe(false);
+  });
+});

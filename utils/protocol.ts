@@ -8,7 +8,7 @@ export function isValidPayload(payload: unknown): payload is AgentPayload {
   if (!payload || typeof payload !== 'object') return false;
   const p = payload as Record<string, unknown>;
   if (!p.action || typeof p.action !== 'string') return false;
-  const validActions = ['run_shell', 'write_file', 'read_file', 'list_files', 'git_status', 'git_diff', 'run_python'];
+  const validActions = ['run_shell', 'write_file', 'read_file', 'list_files', 'git_status', 'git_diff', 'run_python', 'attach_files'];
   if (!validActions.includes(p.action)) return false;
 
   if (p.action === 'run_shell' && typeof p.command !== 'string') return false;
@@ -18,6 +18,11 @@ export function isValidPayload(payload: unknown): payload is AgentPayload {
   if (p.action === 'git_status' && typeof p.filepath !== 'string') return false;
   if (p.action === 'git_diff' && typeof p.filepath !== 'string') return false;
   if (p.action === 'run_python' && (typeof p.filepath !== 'string' && typeof p.content !== 'string')) return false;
+
+  if (p.action === 'attach_files') {
+    if (!Array.isArray(p.filepaths) || p.filepaths.length === 0) return false;
+    if (!(p.filepaths as unknown[]).every((f) => typeof f === 'string' && f.length > 0)) return false;
+  }
 
   return true;
 }
