@@ -26,10 +26,8 @@ function getElementText(el: HTMLElement): string {
   return el.innerText || el.textContent || '';
 }
 
-export function injectResponse(data: { output?: string; error?: string; message?: string }): boolean {
-  const outputText = data?.output || data?.error || data?.message || 'Command completed.';
-  const fullText = `System Result:\n${outputText}`;
-
+/** Inject raw text into Gemini's composer (Quill). Returns true on success. */
+export function injectText(fullText: string): boolean {
   const strategies = [
     () => injectIntoContentEditable(document.querySelector('rich-textarea [contenteditable="true"]'), fullText),
     () => injectIntoContentEditable(document.querySelector('[role="textbox"][contenteditable="true"]'), fullText),
@@ -41,20 +39,24 @@ export function injectResponse(data: { output?: string; error?: string; message?
     try {
       const result = strategy();
       if (result === 'injected') {
-        info('Response injected successfully');
+        info('Text injected successfully');
         return true;
       }
       if (result === 'skipped_user_typing') {
-        warn('Response not injected: user is actively typing in the input');
+        warn('Injection skipped: user is actively typing in the input');
         return false;
       }
     } catch (e) {
       warn('Injection strategy failed', { error: (e as Error).message });
     }
   }
-
   error('Could not find any injectable input element');
   return false;
+}
+
+export function injectResponse(data: { output?: string; error?: string; message?: string }): boolean {
+  const outputText = data?.output || data?.error || data?.message || 'Command completed.';
+  return injectText(`System Result:\n${outputText}`);
 }
 
 type InjectionResult = 'injected' | 'skipped_user_typing' | false;
