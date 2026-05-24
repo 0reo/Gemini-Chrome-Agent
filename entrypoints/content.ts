@@ -2,7 +2,8 @@ import { CONFIG } from '@/utils/config';
 import { info, warn, error } from '@/utils/logger';
 import { isValidPayload, generateId } from '@/utils/protocol';
 import { isRecentlyProcessed, markPayloadProcessed } from '@/utils/dedup';
-import { injectResponse, triggerSend } from '@/utils/injection';
+import { injectResponse, injectText, triggerSend } from '@/utils/injection';
+import { AttachAssembler, type AttachResult } from '@/utils/attach';
 import type { AgentPayload, AgentState, ExtensionMessage } from '@/utils/types';
 
 export default defineContentScript({
@@ -14,6 +15,8 @@ export default defineContentScript({
     let minuteTimer: number | null = null;
     let scanTimeout: number | null = null;
     const pageLoadTime = Date.now();
+    const attachAssemblers = new Map<string, AttachAssembler>();
+    const attachRequests = new Map<string, { source: 'gemini' | 'popup'; prompt?: string }>();
 
     // Dynamic settings (overridable via storage)
     let cooldownMs: number = CONFIG.COOLDOWN_MS;
@@ -202,6 +205,9 @@ export default defineContentScript({
           const context = extractChatContext(block);
           info('Executing action', { action: payload.action, id: payload.id, context });
           browser.runtime.sendMessage({ type: 'SEND_TO_HOST', payload } as ExtensionMessage);
+          if (payload.action === 'attach_files') {
+            attachRequests.set(payload.id, { source: 'gemini', prompt: payload.prompt });
+          }
           setCooldown();
           trackExecution();
         } catch {
@@ -239,6 +245,14 @@ export default defineContentScript({
     // --- Response Injection ---
     browser.runtime.onMessage.addListener((message: ExtensionMessage) => {
       if (message.type === 'HOST_RESPONSE') {
+        if (message.data?.status === 'attach' && message.data.attach) {
+          const id = message.data.id;
+          let asm = attachAssemblers.get(id);
+          if (!asm) { asm = new AttachAssembler(); attachAssemblers.set(id, asm); }
+          const result = asm.add(message.data.attach);
+          if (result) { attachAssemblers.delete(id); void handleAttachComplete(id, result); }
+          return;
+        }
         if (isPaused()) {
           info('Response received but agent is paused; ignoring');
           return;
@@ -263,6 +277,63 @@ export default defineContentScript({
         }
       }
     });
+
+    // Popup-driven attach: receive paths, dispatch an attach_files request to the host.
+    browser.runtime.onMessage.addListener((message: any) => {
+      if (message?.type === 'ATTACH_REQUEST' && Array.isArray(message.filepaths)) {
+        const id = generateId();
+        attachRequests.set(id, { source: 'popup' });
+        browser.runtime.sendMessage({
+          type: 'SEND_TO_HOST',
+          payload: { id, action: 'attach_files', filepaths: message.filepaths },
+        } as ExtensionMessage);
+      }
+    });
+
+    function performAttachUpload(files: AttachResult['files']): Promise<{ ok: boolean; error?: string }> {
+      return new Promise((resolve) => {
+        const nonce = generateId();
+        const timer = window.setTimeout(() => {
+          window.removeEventListener('message', onResult);
+          resolve({ ok: false, error: 'uploader timed out' });
+        }, 15000);
+        function onResult(ev: MessageEvent) {
+          const d = ev.data;
+          if (ev.source !== window || !d || d.__gla !== 'attach-result' || d.nonce !== nonce) return;
+          window.clearTimeout(timer);
+          window.removeEventListener('message', onResult);
+          resolve({ ok: !!d.ok, error: d.error });
+        }
+        window.addEventListener('message', onResult);
+        window.postMessage({
+          __gla: 'attach-request',
+          nonce,
+          files: files.map((f) => ({ name: f.filename, type: f.mimeType, base64: f.base64 })),
+        }, '*');
+      });
+    }
+
+    async function handleAttachComplete(id: string, result: AttachResult): Promise<void> {
+      const ctx = attachRequests.get(id) || { source: 'gemini' as const };
+      attachRequests.delete(id);
+      for (const err of result.errors) warn('Attach error', { filename: err.filename, error: err.error });
+      if (result.files.length === 0) {
+        warn('Attach produced no files', { errors: result.errors.length });
+        return;
+      }
+      const upload = await performAttachUpload(result.files);
+      if (!upload.ok) { error('File upload into Gemini failed', { error: upload.error }); return; }
+      info('Files attached', { count: result.files.length, source: ctx.source });
+
+      if (ctx.source === 'popup') return; // stage only
+
+      // Gemini-driven: inject prompt (or a default summary) then honor auto-submit.
+      const names = result.files.map((f) => f.filename).join(', ');
+      const promptText = (ctx.prompt && ctx.prompt.trim()) || `Attached ${result.files.length} file(s): ${names}`;
+      injectText(promptText);
+      const { autoSubmit } = await browser.storage.local.get('autoSubmit').catch(() => ({ autoSubmit: true }));
+      if (autoSubmit !== false) triggerSend();
+    }
 
     info('Content script loaded');
   },
