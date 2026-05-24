@@ -8,6 +8,8 @@ import os
 import logging
 import time
 import tempfile
+import base64
+import mimetypes
 
 logging.basicConfig(
     filename='/tmp/gemini_host.log',
@@ -52,6 +54,85 @@ def truncate_output(text, max_bytes=MAX_OUTPUT_SIZE):
         return text
     truncated = encoded[:max_bytes].decode('utf-8', errors='ignore')
     return truncated + f"\n\n[Output truncated: exceeded {max_bytes} bytes]"
+
+
+ATTACH_MAX_BYTES = 25 * 1024 * 1024
+ATTACH_CHUNK_SIZE = 512 * 1024  # base64 characters per chunk
+
+
+def read_file_b64(path, max_bytes=ATTACH_MAX_BYTES):
+    """Read a file and return (mime_type, base64_str). Raises FileNotFoundError
+    or ValueError (too large)."""
+    expanded = os.path.expanduser(path)
+    if not os.path.isfile(expanded):
+        raise FileNotFoundError(f'File not found: {path}')
+    size = os.path.getsize(expanded)
+    if size > max_bytes:
+        raise ValueError(f'File too large to attach ({size} bytes > {max_bytes} limit): {path}')
+    with open(expanded, 'rb') as f:
+        raw = f.read()
+    mime = mimetypes.guess_type(expanded)[0] or 'application/octet-stream'
+    return mime, base64.b64encode(raw).decode('ascii')
+
+
+def chunk_b64(b64, chunk_size=ATTACH_CHUNK_SIZE):
+    """Split a base64 string into chunk_size-character pieces (rejoinable by concat)."""
+    return [b64[i:i + chunk_size] for i in range(0, len(b64), chunk_size)]
+
+
+def handle_attach_files(msg):
+    req_id = msg.get('id', 'unknown')
+    filepaths = msg.get('filepaths') or []
+    start = time.perf_counter()
+    file_count = len(filepaths)
+    logging.info(f"[{req_id}] Attaching {file_count} file(s)")
+
+    for idx, path in enumerate(filepaths):
+        try:
+            mime, b64 = read_file_b64(path)
+            filename = os.path.basename(os.path.expanduser(path)) or f'file-{idx}'
+            chunks = chunk_b64(b64)
+            chunk_count = max(1, len(chunks))
+            if not chunks:
+                chunks = ['']  # zero-byte file -> one empty chunk
+            for ci, part in enumerate(chunks):
+                send_message({
+                    'id': req_id,
+                    'status': 'attach',
+                    'attach': {
+                        'kind': 'chunk',
+                        'fileCount': file_count,
+                        'fileIndex': idx,
+                        'filename': filename,
+                        'mimeType': mime,
+                        'chunkIndex': ci,
+                        'chunkCount': chunk_count,
+                        'data': part,
+                    },
+                    'meta': {},
+                })
+        except Exception as e:
+            logging.error(f"[{req_id}] attach error for {path}: {e}")
+            send_message({
+                'id': req_id,
+                'status': 'attach',
+                'attach': {
+                    'kind': 'error',
+                    'fileCount': file_count,
+                    'fileIndex': idx,
+                    'filename': os.path.basename(str(path)) or str(path),
+                    'error': str(e),
+                },
+                'meta': {},
+            })
+
+    duration_ms = round((time.perf_counter() - start) * 1000)
+    send_message({
+        'id': req_id,
+        'status': 'attach',
+        'attach': {'kind': 'complete', 'fileCount': file_count},
+        'meta': {'duration_ms': duration_ms},
+    })
 
 
 def respond_success(req_id, meta, output=None, message=None, code=None):
@@ -373,6 +454,8 @@ if __name__ == '__main__':
                 handle_git_diff(msg)
             elif action == 'run_python':
                 handle_run_python(msg)
+            elif action == 'attach_files':
+                handle_attach_files(msg)
             else:
                 duration_ms = round((time.perf_counter() - start) * 1000)
                 logging.warning(f"[{req_id}] Unknown action: {action}")
