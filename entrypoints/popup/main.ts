@@ -38,6 +38,11 @@ function render(
           <span class="setting-label">Auto-submit responses</span>
           <input id="auto-submit-input" type="checkbox" ${autoSubmit ? 'checked' : ''} />
         </label>
+        <div class="attach-row">
+          <textarea id="attach-paths" class="attach-input" rows="2" placeholder="Local file path(s) to attach, one per line"></textarea>
+          <button id="attach-btn" class="secondary-btn">Attach to Gemini</button>
+          <div id="attach-status" class="status-msg"></div>
+        </div>
         <label class="setting-row">
           <span class="setting-label">Cooldown</span>
           <input id="cooldown-input" type="range" min="5" max="60" value="${cooldownSeconds}" />
@@ -110,6 +115,27 @@ function render(
     a.click();
     URL.revokeObjectURL(url);
     statusEl.textContent = `${logs.length} log(s) exported`;
+    statusEl.className = 'status-msg success';
+  });
+
+  const attachBtn = document.getElementById('attach-btn');
+  attachBtn?.addEventListener('click', async () => {
+    const ta = document.getElementById('attach-paths') as HTMLTextAreaElement | null;
+    const statusEl = document.getElementById('attach-status')!;
+    const filepaths = (ta?.value || '').split('\n').map((s) => s.trim()).filter(Boolean);
+    if (filepaths.length === 0) {
+      statusEl.textContent = 'Enter at least one file path';
+      statusEl.className = 'status-msg warn';
+      return;
+    }
+    const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
+    if (!tab?.id || !/:\/\/gemini\.google\.com\//.test(tab.url || '')) {
+      statusEl.textContent = 'Open a Gemini tab first';
+      statusEl.className = 'status-msg warn';
+      return;
+    }
+    await browser.tabs.sendMessage(tab.id, { type: 'ATTACH_REQUEST', filepaths });
+    statusEl.textContent = `Attaching ${filepaths.length} file(s)… (staged in the composer)`;
     statusEl.className = 'status-msg success';
   });
 

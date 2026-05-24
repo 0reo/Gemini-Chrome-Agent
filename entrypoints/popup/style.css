@@ -254,3 +254,9 @@ h1 {
 .danger-btn:active {
   background: #6e2020;
 }
+
+.attach-row { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+.attach-input {
+  width: 100%; box-sizing: border-box; resize: vertical; font-family: monospace;
+  font-size: 12px; padding: 6px; border-radius: 6px; border: 1px solid #444; background: #1e1e1e; color: #eee;
+}
