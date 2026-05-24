@@ -19,12 +19,10 @@ export default defineContentScript({
     let cooldownMs: number = CONFIG.COOLDOWN_MS;
     let maxPerMinute: number = CONFIG.MAX_PER_MINUTE;
     let settlingPeriodMs: number = CONFIG.SETTLING_PERIOD_MS;
-    let autoSubmit: boolean = CONFIG.AUTO_SUBMIT;
-
     async function loadSettings(): Promise<void> {
       try {
         const result = await browser.storage.local.get([
-          'cooldownSeconds', 'maxPerMinute', 'settlingSeconds', 'autoSubmit'
+          'cooldownSeconds', 'maxPerMinute', 'settlingSeconds'
         ]);
         if (typeof result.cooldownSeconds === 'number') {
           cooldownMs = result.cooldownSeconds * 1000;
@@ -34,9 +32,6 @@ export default defineContentScript({
         }
         if (typeof result.settlingSeconds === 'number') {
           settlingPeriodMs = result.settlingSeconds * 1000;
-        }
-        if (typeof result.autoSubmit === 'boolean') {
-          autoSubmit = result.autoSubmit;
         }
       } catch {
         // Fallback to CONFIG defaults already set
@@ -140,13 +135,7 @@ export default defineContentScript({
         }
       }
 
-      if (changes.autoSubmit) {
-        const val = changes.autoSubmit.newValue;
-        if (typeof val === 'boolean') {
-          autoSubmit = val;
-          info('Auto-submit setting updated', { autoSubmit: val });
-        }
-      }
+
     });
 
     // Keyboard shortcut
@@ -257,7 +246,19 @@ export default defineContentScript({
         if (message.data) {
           const injected = injectResponse(message.data);
           if (injected) {
-            triggerSend(() => isPaused(), autoSubmit);
+            // Read auto-submit fresh from storage to avoid a stale in-memory value.
+            // Default ON (the agent loop's whole point) — and keep that default on a
+            // storage-read failure too, so the two paths can't disagree.
+            browser.storage.local.get('autoSubmit')
+              .then(({ autoSubmit }) => autoSubmit !== false)
+              .catch(() => true)
+              .then((shouldSubmit) => {
+                if (shouldSubmit) {
+                  triggerSend();
+                } else {
+                  info('Auto-submit disabled; response left in input for manual submit');
+                }
+              });
           }
         }
       }

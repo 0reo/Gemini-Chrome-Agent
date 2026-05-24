@@ -10,8 +10,8 @@ describe('CONFIG', () => {
       'PAYLOAD_TTL_MS',
       'CLEANUP_INTERVAL_MS',
       'SCAN_DEBOUNCE_MS',
-      'MAX_SEND_ATTEMPTS',
       'SEND_POLL_INTERVAL_MS',
+      'SEND_READY_TIMEOUT_MS',
       'LOG_BUFFER_SIZE',
     ] as const;
 

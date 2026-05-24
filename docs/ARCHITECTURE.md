@@ -83,15 +83,14 @@ A single autonomous loop looks like this:
 ### `utils/injection.ts` — Input Injection & Send Trigger
 
 - **`injectResponse(data)`**: Injects the host response into Gemini's chat input box.
-  - Tries four strategies in order:
+  - Tries four selectors in order, the first three of which resolve to Gemini's **Quill** editor (`div.ql-editor`):
     1. `rich-textarea [contenteditable="true"]`
     2. `[role="textbox"][contenteditable="true"]`
     3. `.ql-editor`
-    4. `<textarea>`
-  - Uses `DataTransfer` paste simulation for React-compatible state updates.
-  - Falls back to `document.execCommand('insertText')` and direct `innerText` assignment.
-  - Dispatches `input`, `change`, `compositionend`, `keyup`, `keydown` events to nudge React re-renders.
-- **`triggerSend(isPaused)`**: Polls for the Send button every `SEND_POLL_INTERVAL_MS` (200ms) up to `MAX_SEND_ATTEMPTS` (50). Uses selector list + heuristic text/aria-label matching. Triggers input events between attempts to enable the button.
+    4. `<textarea>` (fallback; not present in current Gemini)
+  - For the contenteditable (Quill), injects via `document.execCommand('selectAll' → 'delete' → 'insertText')`. Gemini is an **Angular Material + Quill** app, not React: Quill keeps its own document model and syncs from the DOM via an async MutationObserver, so direct DOM mutation (`insertNode`/`innerText`) or a synthetic `ClipboardEvent('paste')` leaves the model empty and the Send button never arms. `execCommand` routes through the browser's native editing pipeline, firing the `beforeinput`/`input` events Quill observes.
+  - Skips injection if the user is actively typing (`isUserActivelyTyping` guard).
+- **`triggerSend()`**: Finds the Send button, then **bounded-polls** for readiness (every `SEND_POLL_INTERVAL_MS`, up to `SEND_READY_TIMEOUT_MS`) and clicks once ready. Readiness is tested via computed **`pointer-events !== 'none'`** — Gemini gates Send that way, *not* via the native `disabled` property (which stays `false`). The poll only reads state (no event dispatching, so no main-thread spam); on timeout the response is left in the input for manual submit.
 
 ### `utils/dedup.ts` — Payload Deduplication
 

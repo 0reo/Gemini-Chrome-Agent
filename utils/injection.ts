@@ -26,14 +26,6 @@ function getElementText(el: HTMLElement): string {
   return el.innerText || el.textContent || '';
 }
 
-function setElementText(el: HTMLElement, text: string): void {
-  if (el instanceof HTMLTextAreaElement) {
-    el.value = text;
-  } else {
-    el.innerText = text;
-  }
-}
-
 export function injectResponse(data: { output?: string; error?: string; message?: string }): boolean {
   const outputText = data?.output || data?.error || data?.message || 'Command completed.';
   const fullText = `System Result:\n${outputText}`;
@@ -76,28 +68,18 @@ function injectIntoContentEditable(element: Element | null, text: string): Injec
     return 'skipped_user_typing';
   }
 
+  // Gemini's input is a Quill editor. Quill keeps its own document model and
+  // syncs it from the DOM via a MutationObserver, so directly mutating the DOM
+  // (range.insertNode, setting innerText) leaves Quill's model empty — the text
+  // shows on screen but the Send button never arms. execCommand routes through
+  // the browser's native editing pipeline, firing the beforeinput/input events
+  // Quill listens to, which updates its model. selectAll+delete first so any
+  // leftover content is replaced cleanly (a bare selectAll+insertText corrupts
+  // the first character against Quill).
   el.focus();
-  const selection = window.getSelection();
-  const range = document.createRange();
-  range.selectNodeContents(el);
-  selection?.removeAllRanges();
-  selection?.addRange(range);
-
-  // Delete current content
-  range.deleteContents();
-
-  // Insert new text node
-  const textNode = document.createTextNode(text);
-  range.insertNode(textNode);
-
-  // Move cursor to end
-  range.selectNodeContents(textNode);
-  range.collapse(false);
-  selection?.removeAllRanges();
-  selection?.addRange(range);
-
-  // Minimal event dispatch to trigger React state updates
-  el.dispatchEvent(new InputEvent('input', { bubbles: true, data: text }));
+  document.execCommand('selectAll', false, undefined);
+  document.execCommand('delete', false, undefined);
+  document.execCommand('insertText', false, text);
 
   return 'injected';
 }
@@ -114,16 +96,23 @@ function injectIntoTextarea(element: Element | null, text: string): InjectionRes
   el.focus();
   el.value = text;
   el.dispatchEvent(new Event('input', { bubbles: true }));
-  el.dispatchEvent(new Event('change', { bubbles: true }));
   return 'injected';
 }
 
-export function triggerSend(isPaused: () => boolean, shouldAutoSubmit: boolean): void {
-  if (!shouldAutoSubmit) {
-    info('Auto-submit disabled; response left in input for user review');
-    return;
-  }
-
+/**
+ * Click Gemini's Send button once it becomes ready.
+ *
+ * Two subtleties, both verified against the live Gemini DOM:
+ *  - Gemini gates Send via `pointer-events: none`, NOT the native `disabled`
+ *    property (which stays false even when the box is empty). So readiness is
+ *    tested via computed pointer-events, not `button.disabled`.
+ *  - After injection, Quill updates its model on a microtask and Angular arms
+ *    the button a tick later — Send is never ready synchronously. We poll on a
+ *    short, bounded schedule that ONLY reads state (no event dispatching, so no
+ *    main-thread spam — that spam was the old freeze), and give up after a hard
+ *    deadline, leaving the text in the box for manual submit.
+ */
+export function triggerSend(): void {
   const buttonSelectors = [
     'button[aria-label="Send message"]',
     'button[aria-label*="Send"]',
@@ -133,55 +122,39 @@ export function triggerSend(isPaused: () => boolean, shouldAutoSubmit: boolean):
     'button[aria-label*="send"]',
   ];
 
-  let attempts = 0;
-
-  const interval = window.setInterval(() => {
-    if (isPaused()) {
-      clearInterval(interval);
-      return;
-    }
-
-    let sendButton: HTMLButtonElement | null = null;
+  const findButton = (): HTMLButtonElement | null => {
     for (const selector of buttonSelectors) {
       const btn = document.querySelector<HTMLButtonElement>(selector);
-      if (btn && !btn.disabled) {
-        sendButton = btn;
-        break;
-      }
+      if (btn) return btn;
     }
+    return (
+      Array.from(document.querySelectorAll('button')).find((btn) => {
+        const label = (btn.getAttribute('aria-label') || btn.innerText || '').toLowerCase();
+        return label.includes('send');
+      }) as HTMLButtonElement | undefined
+    ) || null;
+  };
 
-    if (!sendButton) {
-      sendButton = Array.from(document.querySelectorAll('button')).find((btn) => {
-        const text = (btn.innerText || btn.textContent || '').toLowerCase();
-        const aria = (btn.getAttribute('aria-label') || '').toLowerCase();
-        return (text.includes('send') || aria.includes('send')) && !btn.disabled;
-      }) || null;
-    }
+  const isReady = (btn: HTMLButtonElement): boolean =>
+    !btn.disabled &&
+    btn.getAttribute('aria-disabled') !== 'true' &&
+    getComputedStyle(btn).pointerEvents !== 'none';
 
-    if (sendButton) {
-      clearInterval(interval);
-      sendButton.click();
+  const deadline = Date.now() + CONFIG.SEND_READY_TIMEOUT_MS;
+
+  const attemptClick = (): void => {
+    const btn = findButton();
+    if (btn && isReady(btn)) {
+      btn.click();
       info('Auto-submitted response');
       return;
     }
-
-    // Only trigger input events for the first few attempts, then wait quietly
-    if (attempts < 5) {
-      triggerInputEvents();
+    if (Date.now() < deadline) {
+      window.setTimeout(attemptClick, CONFIG.SEND_POLL_INTERVAL_MS);
+    } else {
+      warn('Send button did not arm before timeout; response left in input for manual submit');
     }
+  };
 
-    if (++attempts >= CONFIG.MAX_SEND_ATTEMPTS) {
-      clearInterval(interval);
-      warn('Failed to find enabled send button after maximum attempts');
-    }
-  }, CONFIG.SEND_POLL_INTERVAL_MS);
-}
-
-function triggerInputEvents(): void {
-  const inputs = document.querySelectorAll<HTMLElement>(
-    'rich-textarea [contenteditable="true"], [role="textbox"][contenteditable="true"], .ql-editor, textarea'
-  );
-  inputs.forEach((el) => {
-    el.dispatchEvent(new InputEvent('input', { bubbles: true }));
-  });
+  attemptClick();
 }

@@ -5,12 +5,11 @@ export const CONFIG = {
   PAYLOAD_TTL_MS: 60000,
   CLEANUP_INTERVAL_MS: 5000,
   SCAN_DEBOUNCE_MS: 250,
-  MAX_SEND_ATTEMPTS: 50,
-  SEND_POLL_INTERVAL_MS: 200,
+  SEND_POLL_INTERVAL_MS: 100,
+  SEND_READY_TIMEOUT_MS: 2000,
   LOG_SERVER_URL: 'http://localhost:9999',
   LOG_BUFFER_SIZE: 1000,
   NATIVE_HOST_NAME: 'com.local.gemini_agent',
-  AUTO_SUBMIT: true,
 } as const;
 
 export const VALID_ACTIONS: Set<string> = new Set([

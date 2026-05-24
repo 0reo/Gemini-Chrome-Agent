@@ -166,14 +166,14 @@ Manifest V3 service workers are ephemeral. Chrome/Brave terminates them after ~3
    ```
    One of these must return a non-null element. If Google has updated their DOM, update the selectors in `utils/injection.ts`.
 
-2. **Try manual paste**
-   In `injectIntoContentEditable`, the primary mechanism is a simulated `ClipboardEvent('paste')`. Some React frameworks block synthetic paste events. Try manually pasting into the input box — if that works but the script fails, the framework may be intercepting synthetic events.
+2. **Verify the text reaches Quill's model, not just the DOM**
+   Gemini's input is a **Quill** editor (Angular Material), and Quill keeps its own document model. The injector uses `document.execCommand('insertText')` because Quill ignores raw DOM mutation *and* synthetic `ClipboardEvent('paste')`. To check: after injecting, the `.ql-editor` should lose its `ql-blank` class. If `ql-blank` remains, Quill didn't ingest the text — the Send button won't arm. With Quill's instance available in the page console (`document.querySelector('.ql-container').__quill.getText()`), confirm the model is non-empty. (Note: the content script's isolated world can't see `__quill` — use only `execCommand`/native input events there.)
 
 3. **Verify input element is focused and editable**
    If the input is inside a Shadow DOM or iframe, `document.querySelector` from the content script won't find it. Gemini currently does not use Shadow DOM for the chat input, but this should be verified if injection suddenly breaks.
 
 4. **Check `triggerSend()`**
-   The Send button polling uses these selectors:
+   The Send button check uses these selectors:
    ```js
    'button[aria-label="Send message"]'
    'button[aria-label*="Send"]'
@@ -182,7 +182,7 @@ Manifest V3 service workers are ephemeral. Chrome/Brave terminates them after ~3
    'button.send-button'
    'button[aria-label*="send"]'
    ```
-   If the button is disabled until text is entered, the input events dispatched by `injectResponse` may not be sufficient. Run `triggerInputEvents()` manually in the console to force-enable it.
+   `triggerSend()` finds the button, then bounded-polls for readiness and clicks once ready. **Readiness is `getComputedStyle(btn).pointerEvents !== 'none'`, NOT `btn.disabled`** — Gemini's Send button keeps `disabled === false` even when the box is empty and gates clicks via `pointer-events`. If auto-submit silently fails, check the button's computed `pointer-events` after injection; if it stays `none`, the injected text never reached Quill's model (see step 2).
 
 5. **Use `test/test_injection.html`**
    Open this file directly in a browser tab (no extension needed). It simulates the three input types and runs the exact injection strategies from `utils/injection.ts`. If a strategy fails here, it will also fail on Gemini.
