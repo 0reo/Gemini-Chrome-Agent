@@ -53,6 +53,9 @@ The extension is built with [WXT](https://wxt.dev/) and loaded as an unpacked ex
 ├── README.md                      # Human-facing quick start
 ├── project-documentation.md       # Detailed human-facing documentation
 ├── Gemini_Chrome_Agent.md         # Conversation transcript that originated the project
+├── .agents/skills/                # Canonical agent-skills store (real files; see Agent Skills)
+│   └── chrome-extension-builder/  #   SKILL.md + knowledge/ + templates/ + scripts/
+├── .claude/skills/                # Per-skill symlinks → ../../.agents/skills (Claude Code)
 └── .output/chrome-mv3/            # WXT build output (load this as unpacked extension)
 ```
 
@@ -81,6 +84,28 @@ All actions are represented as JSON code blocks inside the Gemini chat. The cont
 | `git_status` / `git_diff` | `filepath` (dir, defaults `.`) | Runs `git status` / `git diff` in the directory. |
 | `run_python` | `content` or `filepath` | Runs inline code (temp file) or an existing script via `sys.executable`. |
 | `attach_files` | `filepaths` (non-empty array); optional `prompt` | Reads each file in `host.py`, streams it to the extension as size-guarded base64 chunks, and a MAIN-world script injects them into Gemini's uploader. With a `prompt` (or a default summary) it then honors the auto-submit toggle. |
+
+## Agent Skills (cross-harness)
+
+This repo ships reusable [agent skills](https://moonshotai.github.io/kimi-cli/en/customization/skills.html) (`SKILL.md` bundles) that must be discoverable from **any** AI coding harness used on the project — Claude Code, Kimi (kimi-code / kimi-cli), Codex, etc. Each harness scans a *different* directory, so the layout is **one canonical store + per-harness symlinks**, mirroring this host's global `~/.agents/skills/` convention.
+
+**Canonical store:** `.agents/skills/<skill-name>/` holds the real files. `.agents/skills` is the *generic* skills directory that Kimi (both kimi-code and kimi-cli ≥ 1.39) auto-discovers natively by walking up to the nearest `.git` ancestor — **no symlink needed for Kimi.** Only Claude Code needs a symlink, because it scans `.claude/skills/` exclusively (project scope) and has no setting to add a directory.
+
+| Harness | Scans (project scope) | How it sees the skill |
+|---------|-----------------------|-----------------------|
+| Kimi (kimi-code) | `.agents/skills`, `.kimi-code/skills` | **native** — reads the canonical store directly |
+| Kimi (kimi-cli ≥ 1.39) | `.agents/skills`, `.kimi/skills`, `.claude/skills`, `.codex/skills` | **native** via `.agents/skills` |
+| Claude Code | `.claude/skills` only | via the `.claude/skills/<name>` symlink → `../../.agents/skills/<name>` (Claude Code follows symlinks at discovery + load time) |
+
+Skill discovery resolves real paths (`realpath`), so the symlink is followed transparently. Git stores it as mode `120000` (the relative target string), not duplicated content. Empirically verified 2026-05-31: kimi-code 0.6.0 and kimi-cli 1.45.0 both load `chrome-extension-builder` from `.agents/skills`, and Claude Code loads it via the `.claude/skills` symlink.
+
+**Adding a new skill:** create it under `.agents/skills/<name>/` (with a `SKILL.md` whose frontmatter has at least `name` and `description` — the only universally-required fields), then add the Claude Code symlink:
+```bash
+ln -s ../../.agents/skills/<name> .claude/skills/<name>
+git add .agents/skills/<name> .claude/skills/<name>
+```
+
+**Supporting a new harness:** if it reads `.agents/skills` natively (Kimi, Codex), nothing is needed. Otherwise add one symlink from its project skills dir to `.agents/skills/<name>` — e.g. a pre-1.39 kimi-cli would need `ln -s ../../.agents/skills/<name> .kimi/skills/<name>`.
 
 ## Setup & Installation
 
