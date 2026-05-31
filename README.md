@@ -45,6 +45,10 @@ Paste your Extension ID when prompted.
 
 The extension will detect the payload, execute it, and return the result.
 
+### Gemini gem instructions
+
+Copy the system prompt from [`docs/GEM_PROMPT.md`](docs/GEM_PROMPT.md) into your Gemini gem's **Instructions** field so the model knows how to emit action JSON blocks.
+
 ---
 
 ## Project Structure
