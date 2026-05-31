@@ -33,3 +33,6 @@ __pycache__/
 # Test coverage
 coverage/
 .playwright-mcp/
+
+# Local scratch (opencli A/B, issue drafts, etc.)
+.tmp/
