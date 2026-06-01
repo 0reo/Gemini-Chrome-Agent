@@ -18,7 +18,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from test.closed_loop.harness import DEFAULT_PORT, cdp_is_up, set_verbose
+from test.closed_loop.harness import DEFAULT_PORT, capture_failure_artifacts, cdp_is_up, set_verbose
 from test.closed_loop.pipeline_assert import PipelineFailure
 from test.closed_loop.scenarios.tier_a import TIER_A
 from test.closed_loop.scenarios.tier_b import TIER_B
@@ -87,9 +87,11 @@ def main() -> int:
             fn(args.port)
         except PipelineFailure as e:
             print(f"FAIL {name}: {e}", file=sys.stderr)
+            capture_failure_artifacts(args.port, name)
             failed += 1
         except Exception as e:
             print(f"FAIL {name}: {e}", file=sys.stderr)
+            capture_failure_artifacts(args.port, name)
             failed += 1
 
     print(f"\n{'=' * 40}\n{len(scenarios) - failed}/{len(scenarios)} passed")

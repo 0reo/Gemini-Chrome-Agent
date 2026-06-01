@@ -65,6 +65,69 @@ def host_log_offset() -> int:
         return 0
 
 
+def capture_failure_artifacts(port: int, label: str) -> str | None:
+    """Save a screenshot + composer/send/thread state when a scenario fails, so a failed run is
+    never blind (Rule 0 / #17). Attaches to the existing tab WITHOUT reloading (preserves the
+    failure state). Best-effort: never raises — a capture error must not mask the real failure."""
+    import base64
+
+    out_dir = Path("/tmp/closed_loop_failures")
+    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in label)
+    stamp = time.strftime("%H%M%S")
+    saved: list[str] = []
+    cdp = None
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        cdp = CDPClient(port)
+        page = find_target(cdp, _is_gemini_app_page)
+        if not page:
+            return None
+        page_sess = attach_to_target(cdp, page["targetId"])
+        try:
+            cdp.send("Page.enable", session_id=page_sess)
+            mid = cdp.send("Page.captureScreenshot", {"format": "png"}, session_id=page_sess)
+            data = (cdp.recv(mid, timeout=10.0) or {}).get("result", {}).get("data")
+            if data:
+                png = out_dir / f"{safe}_{stamp}.png"
+                png.write_bytes(base64.b64decode(data))
+                saved.append(str(png))
+        except Exception as exc:  # capture must not mask the real failure
+            log_step(f"capture: screenshot failed ({exc})")
+        try:
+            state = evaluate(cdp, page_sess, """(() => {
+              const ed = document.querySelector('.ql-editor.textarea') || document.querySelector('.ql-editor');
+              const send = document.querySelector('button[aria-label="Send message"]');
+              return {
+                url: location.href,
+                composerLen: ed ? (ed.innerText||'').trim().length : null,
+                composerText: ed ? (ed.innerText||'').slice(0, 300) : null,
+                qlBlank: ed ? ed.classList.contains('ql-blank') : null,
+                sendPointerEvents: send ? getComputedStyle(send).pointerEvents : 'no-send-button',
+                sendDisabled: send ? send.disabled : null,
+                userQueries: document.querySelectorAll('user-query').length,
+                modelResponses: document.querySelectorAll('model-response').length,
+                threadHasSystemResult: document.body.innerText.includes('System Result'),
+              };
+            })()""").get("value")
+            js = out_dir / f"{safe}_{stamp}.json"
+            js.write_text(json.dumps(state, indent=2))
+            saved.append(str(js))
+        except Exception as exc:
+            log_step(f"capture: DOM state failed ({exc})")
+    except Exception as exc:
+        log_step(f"capture: could not attach for artifacts ({exc})")
+        return None
+    finally:
+        if cdp is not None:
+            try:
+                cdp.close()
+            except Exception:
+                pass
+    if saved:
+        print(f"  ↳ failure artifacts: {', '.join(saved)}", file=sys.stderr)
+    return out_dir.as_posix() if saved else None
+
+
 def _is_gemini_app_page(target: dict) -> bool:
     url = target.get("url", "")
     return target.get("type") == "page" and url.startswith("https://gemini.google.com/")
