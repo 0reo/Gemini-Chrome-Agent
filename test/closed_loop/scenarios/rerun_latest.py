@@ -43,7 +43,9 @@ def run_rerun_latest(port: int) -> None:
         wait_cooldown(ctx)
 
         offset2 = _host_offset()
-        trigger_rerun_latest(sess)
+        ret = trigger_rerun_latest(sess)
+        if not ret.get("ok"):
+            raise PipelineFailure("trigger", f"rerun trigger failed: {ret}")
         time.sleep(12)
         total = host_exec_count(marker, offset)
         if total < 2:

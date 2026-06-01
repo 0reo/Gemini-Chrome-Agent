@@ -12,30 +12,18 @@ ACTION_BLOCK_SELECTOR_JS = "'pre code, code, pre code.language-json, pre code.hl
 
 
 def trigger_rerun_latest(sess: BrowserSession) -> dict:
-    """Trigger rerun: page postMessage (content listener) with tabs.sendMessage fallback."""
-    page_eval(sess, "window.postMessage({ __gla: 'rerun-latest' }, '*')")
-    from .harness import evaluate
-
-    result = evaluate(
-        sess.cdp,
-        sess.sw_sess,
-        """new Promise((resolve) => {
-          chrome.tabs.query({ url: '*://gemini.google.com/*' }, (tabs) => {
-            const tab = tabs[tabs.length - 1];
-            if (!tab?.id) return resolve({ ok: true, via: 'postMessage_only' });
-            try {
-              chrome.tabs.sendMessage(tab.id, { type: 'RERUN_LATEST' }, () => {
-                void chrome.runtime.lastError;
-                resolve({ ok: true, via: 'tabs.sendMessage' });
-              });
-            } catch (e) {
-              resolve({ ok: true, via: 'postMessage_only', warn: String(e) });
-            }
-          });
-        })""",
-        await_promise=True,
-    )
-    return result.get("value") or {"ok": True, "via": "postMessage_only"}
+    """Trigger rerun via the content script's window.postMessage listener (single channel)."""
+    try:
+        result = page_eval(
+            sess,
+            "(() => { window.postMessage({ __gla: 'rerun-latest' }, '*'); return { ok: true, via: 'postMessage' }; })()",
+        )
+    except Exception as exc:
+        return {"ok": False, "reason": "postMessage_failed", "error": str(exc)}
+    val = result.get("value")
+    if not val:
+        return {"ok": False, "reason": "postMessage_no_result"}
+    return val
 
 
 def audit_action_dom(sess: BrowserSession) -> dict:
