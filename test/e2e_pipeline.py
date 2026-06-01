@@ -14,43 +14,13 @@ by looking for a popup page with "Gemini Local Agent" in the title.
 import json
 import sys
 import time
-import urllib.request
-import websocket
+from pathlib import Path
 
+_TEST_DIR = Path(__file__).resolve().parent
+if str(_TEST_DIR) not in sys.path:
+    sys.path.insert(0, str(_TEST_DIR))
 
-class CDPClient:
-    def __init__(self, port: int):
-        with urllib.request.urlopen(f"http://localhost:{port}/json/version") as resp:
-            data = json.loads(resp.read())
-            self.ws_url = data["webSocketDebuggerUrl"]
-        self.ws = websocket.create_connection(self.ws_url)
-        self._msg_id = 0
-
-    def send(self, method: str, params=None, session_id=None) -> int:
-        self._msg_id += 1
-        msg = {"id": self._msg_id, "method": method}
-        if params:
-            msg["params"] = params
-        if session_id:
-            msg["sessionId"] = session_id
-        self.ws.send(json.dumps(msg))
-        return self._msg_id
-
-    def recv(self, expected_id=None, timeout=10.0):
-        self.ws.settimeout(timeout)
-        for _ in range(100):
-            try:
-                resp = json.loads(self.ws.recv())
-                if expected_id is not None and resp.get("id") == expected_id:
-                    return resp
-                if expected_id is None:
-                    return resp
-            except websocket.WebSocketTimeoutException:
-                break
-        return None
-
-    def close(self):
-        self.ws.close()
+from e2e_browser import CDPClient, attach_to_target, evaluate  # noqa: E402
 
 
 def get_all_targets(cdp: CDPClient) -> list[dict]:
@@ -115,17 +85,6 @@ def read_host_log(path="/tmp/gemini_host.log") -> str:
             return f.read()
     except FileNotFoundError:
         return ""
-
-
-def attach_to_target(cdp: CDPClient, target_id: str) -> str | None:
-    cdp.send("Target.attachToTarget", {"targetId": target_id, "flatten": True})
-    for _ in range(10):
-        resp = cdp.recv()
-        if resp and resp.get("method") == "Target.attachedToTarget":
-            return resp["params"]["sessionId"]
-        if resp and resp.get("id") == cdp._msg_id and "result" in resp:
-            return resp["result"].get("sessionId")
-    return None
 
 
 def run_pipeline_test(cdp_port: int = 9222, known_ext_id: str | None = None) -> bool:

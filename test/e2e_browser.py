@@ -77,6 +77,7 @@ class CDPClient:
 
 def find_target(cdp: CDPClient, predicate) -> dict | None:
     """Find a target matching the predicate."""
+    cdp.drain_events(timeout=0.2)
     msg_id = cdp.send("Target.getTargets")
     resp = cdp.recv(msg_id)
     if not resp or "result" not in resp:
@@ -89,12 +90,14 @@ def find_target(cdp: CDPClient, predicate) -> dict | None:
 
 def attach_to_target(cdp: CDPClient, target_id: str) -> str | None:
     """Attach to a target and return the session ID (flat mode)."""
-    cdp.send("Target.attachToTarget", {"targetId": target_id, "flatten": True})
-    for _ in range(10):
-        resp = cdp.recv()
-        if resp and resp.get("method") == "Target.attachedToTarget":
+    msg_id = cdp.send("Target.attachToTarget", {"targetId": target_id, "flatten": True})
+    for _ in range(20):
+        resp = cdp.recv(timeout=2.0)
+        if not resp:
+            continue
+        if resp.get("method") == "Target.attachedToTarget":
             return resp["params"]["sessionId"]
-        if resp and resp.get("id") == cdp._msg_id and "result" in resp:
+        if resp.get("id") == msg_id and "result" in resp:
             return resp["result"].get("sessionId")
     return None
 
@@ -106,10 +109,14 @@ def evaluate(cdp: CDPClient, session_id: str, expression: str, await_promise: bo
         {"expression": expression, "returnByValue": True, "awaitPromise": await_promise},
         session_id=session_id,
     )
-    resp = cdp.recv(msg_id)
-    if resp and "error" in resp:
-        raise RuntimeError(f"Runtime.evaluate error: {resp['error']}")
-    return resp["result"]["result"] if resp and "result" in resp else {}
+    deadline = time.time() + 30.0
+    while time.time() < deadline:
+        resp = cdp.recv(expected_id=msg_id, timeout=2.0)
+        if resp:
+            if "error" in resp:
+                raise RuntimeError(f"Runtime.evaluate error: {resp['error']}")
+            return resp["result"]["result"] if "result" in resp else {}
+    raise RuntimeError(f"CDP evaluate timed out (session={session_id[:8]}…)")
 
 
 def run_tests(cdp_port: int = 9223) -> bool:
@@ -261,6 +268,6 @@ def run_tests(cdp_port: int = 9223) -> bool:
 
 
 if __name__ == "__main__":
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 9223
+    port = int(sys.argv[1]) if len(sys.argv) > 1 else 9222
     success = run_tests(port)
     sys.exit(0 if success else 1)
