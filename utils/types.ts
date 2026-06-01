@@ -35,7 +35,7 @@ export interface HostResponse {
 }
 
 export interface ExtensionMessage {
-  type: 'SEND_TO_HOST' | 'HOST_RESPONSE';
+  type: 'SEND_TO_HOST' | 'HOST_RESPONSE' | 'RERUN_LATEST';
   payload?: AgentPayload;
   data?: HostResponse;
 }

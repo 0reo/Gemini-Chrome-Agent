@@ -31,6 +31,7 @@ function render(
         <div class="status-text">${isPaused ? 'Paused' : 'Active'}</div>
       </div>
       <button id="toggle-btn" class="toggle-btn">${isPaused ? 'Resume Agent' : 'Pause Agent'}</button>
+      <button id="rerun-btn" class="secondary-btn" ${isPaused ? 'disabled' : ''}>Rerun last action</button>
       <div class="shortcut-hint">Alt+Shift+K to toggle</div>
 
       <div class="settings-section">
@@ -72,6 +73,21 @@ function render(
       </div>
     </div>
   `;
+
+  const rerunBtn = document.getElementById('rerun-btn');
+  rerunBtn?.addEventListener('click', async () => {
+    const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
+    if (!tab?.id || !/:\/\/gemini\.google\.com\//.test(tab.url || '')) {
+      const statusEl = document.getElementById('export-status')!;
+      statusEl.textContent = 'Open a Gemini tab first';
+      statusEl.className = 'status-msg warn';
+      return;
+    }
+    await browser.tabs.sendMessage(tab.id, { type: 'RERUN_LATEST' });
+    const statusEl = document.getElementById('export-status')!;
+    statusEl.textContent = 'Rerun requested on latest action block';
+    statusEl.className = 'status-msg success';
+  });
 
   const btn = document.getElementById('toggle-btn');
   btn?.addEventListener('click', async () => {

@@ -1,5 +1,4 @@
 import { CONFIG } from '@/utils/config';
-import { dbgAgent } from '@/utils/debug-agent-log';
 import { info, warn, error } from '@/utils/logger';
 import { isValidPayload, generateId } from '@/utils/protocol';
 import { isRecentlyProcessed, markPayloadProcessed } from '@/utils/dedup';
@@ -22,6 +21,9 @@ export default defineContentScript({
     const blocksPresentAtLoad = new WeakSet<Element>();
     /** Action JSON blocks already dispatched this session — never re-run same DOM node. */
     const executedBlocks = new WeakSet<Element>();
+
+    /** Selectors for Gemini JSON action blocks (keep in sync with closed-loop DOM audit). */
+    const ACTION_BLOCK_SELECTOR = 'pre code, code, pre code.language-json, pre code.hljs';
 
     // Dynamic settings (overridable via storage)
     let cooldownMs: number = CONFIG.COOLDOWN_MS;
@@ -66,7 +68,6 @@ export default defineContentScript({
 
     function scheduleScan(): void {
       if (isPaused() || state === 'cooldown') {
-        dbgAgent('A', 'content.ts:scheduleScan', 'scan skipped', { state, paused: isPaused() });
         return;
       }
       if (scanTimeout) clearTimeout(scanTimeout);
@@ -111,7 +112,6 @@ export default defineContentScript({
           }, settlingPeriodMs);
         }
         info('Initial pause state synced', { paused });
-        dbgAgent('A', 'content.ts:init', 'pause state loaded', { paused, state });
       });
     });
 
@@ -169,9 +169,66 @@ export default defineContentScript({
       }
     });
 
+    function parsePayloadFromBlock(block: Element): AgentPayload | null {
+      const text = (block.textContent || '').trim();
+      if (!text.includes('"action"')) return null;
+      try {
+        const payload = JSON.parse(text) as AgentPayload;
+        return isValidPayload(payload) ? payload : null;
+      } catch {
+        return null;
+      }
+    }
+
+    /** Last valid action JSON block in document order (for user-initiated rerun). */
+    function findLastActionBlock(): Element | null {
+      const blocks = document.querySelectorAll(ACTION_BLOCK_SELECTOR);
+      let last: Element | null = null;
+      for (const block of blocks) {
+        if (parsePayloadFromBlock(block)) last = block;
+      }
+      return last;
+    }
+
+    function dispatchFromBlock(block: Element, source: 'scan' | 'rerun'): void {
+      const payload = parsePayloadFromBlock(block);
+      if (!payload) {
+        warn('Cannot dispatch: invalid action block', { source });
+        return;
+      }
+      if (!payload.id) {
+        payload.id = generateId();
+      }
+      markPayloadProcessed(payload);
+      executedBlocks.add(block);
+      const context = extractChatContext(block);
+      info('Executing action', { action: payload.action, id: payload.id, context, source });
+      browser.runtime.sendMessage({ type: 'SEND_TO_HOST', payload } as ExtensionMessage);
+      if (payload.action === 'attach_files') {
+        attachRequests.set(payload.id, { source: 'gemini', prompt: payload.prompt });
+      }
+      setCooldown();
+      trackExecution();
+    }
+
+    /** User-initiated: run the latest action block once (bypasses historical / executed guards). */
+    function rerunLatestAction(): void {
+      if (isPaused()) {
+        warn('Rerun latest: agent is paused');
+        return;
+      }
+      const block = findLastActionBlock();
+      if (!block) {
+        warn('Rerun latest: no action JSON block found in thread');
+        return;
+      }
+      info('Rerun latest action (user requested)');
+      dispatchFromBlock(block, 'rerun');
+    }
+
     // --- Record action blocks already on the page (chat history) — do not auto-run ---
     function recordBlocksPresentAtLoad(): void {
-      const blocks = document.querySelectorAll('pre code, code');
+      const blocks = document.querySelectorAll(ACTION_BLOCK_SELECTOR);
       let recorded = 0;
       for (const block of blocks) {
         const text = block.textContent || '';
@@ -188,7 +245,6 @@ export default defineContentScript({
       }
       if (recorded > 0) {
         info(`Recorded ${recorded} historical action block(s) (will not auto-run)`);
-        dbgAgent('C', 'content.ts:recordBlocksPresentAtLoad', 'recorded at load', { recorded });
       }
     }
 
@@ -200,77 +256,36 @@ export default defineContentScript({
     function scanForPayloads(): void {
       scanTimeout = null;
       const settling = isSettling();
-      const blocks = document.querySelectorAll('pre code, code');
-      let withAction = 0;
+      const blocks = document.querySelectorAll(ACTION_BLOCK_SELECTOR);
       let executed = 0;
 
       for (const block of blocks) {
-        const text = block.textContent || '';
-        if (!text.includes('"action"')) continue;
-        withAction++;
+        const payload = parsePayloadFromBlock(block);
+        if (!payload) continue;
 
-        try {
-          const payload = JSON.parse(text) as AgentPayload;
-          if (!isValidPayload(payload)) {
-            dbgAgent('E', 'content.ts:scanForPayloads', 'invalid payload', {
-              snippet: text.slice(0, 120),
-            });
-            continue;
-          }
-
-          if (settling) {
-            info('Settling: ignored historical payload', { action: payload.action });
-            dbgAgent('C', 'content.ts:scanForPayloads', 'settling skip', { action: payload.action });
-            continue;
-          }
-
-          if (blocksPresentAtLoad.has(block)) {
-            dbgAgent('C', 'content.ts:scanForPayloads', 'historical block skip', { action: payload.action });
-            continue;
-          }
-
-          if (executedBlocks.has(block)) {
-            dbgAgent('C', 'content.ts:scanForPayloads', 'executed block skip', { action: payload.action });
-            continue;
-          }
-
-          if (isRecentlyProcessed(payload)) {
-            dbgAgent('C', 'content.ts:scanForPayloads', 'dedup skip', { action: payload.action });
-            continue;
-          }
-
-          markPayloadProcessed(payload);
-          executedBlocks.add(block);
-          if (!payload.id) {
-            payload.id = generateId();
-          }
-          executed++;
-          dbgAgent('OK', 'content.ts:scanForPayloads', 'dispatching to host', {
-            action: payload.action,
-            id: payload.id,
-          });
-          // Capture chat context for debugging
-          const context = extractChatContext(block);
-          info('Executing action', { action: payload.action, id: payload.id, context });
-          browser.runtime.sendMessage({ type: 'SEND_TO_HOST', payload } as ExtensionMessage);
-          if (payload.action === 'attach_files') {
-            attachRequests.set(payload.id, { source: 'gemini', prompt: payload.prompt });
-          }
-          setCooldown();
-          trackExecution();
-        } catch {
-          dbgAgent('B', 'content.ts:scanForPayloads', 'json parse failed', {
-            snippet: text.slice(0, 120),
-          });
+        if (settling) {
+          info('Settling: ignored historical payload', { action: payload.action });
+          continue;
         }
+
+        if (blocksPresentAtLoad.has(block)) {
+          continue;
+        }
+
+        if (executedBlocks.has(block)) {
+          continue;
+        }
+
+        if (isRecentlyProcessed(payload)) {
+          continue;
+        }
+
+        dispatchFromBlock(block, 'scan');
+        executed++;
       }
-      dbgAgent('B', 'content.ts:scanForPayloads', 'scan complete', {
-        state,
-        settling,
-        blockCount: blocks.length,
-        withAction,
-        executed,
-      });
+      if (executed > 0) {
+        info('Scan dispatched payloads', { count: executed, state, settling });
+      }
     }
 
     // Extract surrounding chat context for a given code block element
@@ -317,15 +332,7 @@ export default defineContentScript({
           return;
         }
         if (message.data) {
-          dbgAgent('D', 'content.ts:HOST_RESPONSE', 'host response', {
-            id: message.data.id,
-            status: message.data.status,
-          });
           const injected = injectResponse(message.data);
-          dbgAgent('D', 'content.ts:HOST_RESPONSE', 'inject result', {
-            injected,
-            hasOutput: !!(message.data.output || message.data.error || message.data.message),
-          });
           if (injected) {
             // Read auto-submit fresh from storage to avoid a stale in-memory value.
             // Default ON (the agent loop's whole point) — and keep that default on a
@@ -345,8 +352,8 @@ export default defineContentScript({
       }
     });
 
-    // Popup-driven attach: receive paths, dispatch an attach_files request to the host.
-    browser.runtime.onMessage.addListener((message: any) => {
+    // Popup / harness messages (attach, rerun latest).
+    browser.runtime.onMessage.addListener((message: { type?: string; filepaths?: string[] }) => {
       if (message?.type === 'ATTACH_REQUEST' && Array.isArray(message.filepaths)) {
         const id = generateId();
         attachRequests.set(id, { source: 'popup' });
@@ -354,7 +361,17 @@ export default defineContentScript({
           type: 'SEND_TO_HOST',
           payload: { id, action: 'attach_files', filepaths: message.filepaths },
         } as ExtensionMessage);
+        return;
       }
+      if (message?.type === 'RERUN_LATEST') {
+        rerunLatestAction();
+      }
+    });
+
+    // Closed-loop harness: window.postMessage({ __gla: 'rerun-latest' }, '*')
+    window.addEventListener('message', (ev: MessageEvent) => {
+      if (ev.source !== window || !ev.data || ev.data.__gla !== 'rerun-latest') return;
+      rerunLatestAction();
     });
 
     function performAttachUpload(files: AttachResult['files']): Promise<{ ok: boolean; error?: string }> {
@@ -404,6 +421,7 @@ export default defineContentScript({
       if (injected && autoSubmit !== false) triggerSend();
     }
 
+    document.documentElement.dataset.glaAgentReady = String(Date.now());
     info('Content script loaded');
   },
 });
