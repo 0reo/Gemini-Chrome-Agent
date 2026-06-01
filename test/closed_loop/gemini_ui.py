@@ -290,7 +290,7 @@ def send_prompt(
       const sendBtn = findBtn();
       if (sendBtn && len > 0 && ready(sendBtn)) {
         sendBtn.click();
-        return { ok: true, sent: true, composerLen: len };
+        return { ok: true, clicked: true, composerLen: len };
       }
       return {
         ok: false,
@@ -329,15 +329,15 @@ def send_prompt(
       }};
     }})()"""
 
-    sent_check_js = f"""(() => {{
+    # A send is only "sent" when the composer ACTUALLY clears (the message left the box). Matching
+    # thread text is a false positive (the prompt's preamble repeats every turn); a click that "ran"
+    # proves nothing. So success = composer emptied. (Rule 5 / driving-layer twin of #15.)
+    cleared_check_js = """(() => {
       const el = document.querySelector('.ql-editor.textarea') || document.querySelector('.ql-editor');
-      const blank = el ? (el.classList.contains('ql-blank') || (el.innerText||'').trim().length === 0) : false;
-      const snippet = {snippet};
-      const inThread = document.body.innerText.includes(snippet);
-      const inUserQuery = [...document.querySelectorAll('user-query, .query-text, .user-query-bubble-with-background')]
-        .some(n => (n.textContent||'').includes(snippet));
-      return {{ inThread, inUserQuery, composerBlank: blank }};
-    }})()"""
+      if (!el) return { composerEmpty: false, composerLen: -1 };
+      const len = (el.innerText || el.textContent || '').trim().length;
+      return { composerEmpty: len === 0 || el.classList.contains('ql-blank'), composerLen: len };
+    })()"""
 
     for attempt in range(2):
         if attempt > 0:
@@ -354,35 +354,36 @@ def send_prompt(
             log_step("send_prompt: 0 chars inserted after retry; failing")
             return {"ok": False, "sent": False, "reason": "insert_empty"}
         deadline = time.time() + timeout_s
-        val: dict = {"ok": False, "sent": False, "reason": "send_not_armed"}
+        clicked = False
         tried_enter = False
-        logged_wait = False
         while time.time() < deadline:
-            val = page_eval(sess, click_js).get("value") or val
-            if val.get("sent"):
-                log_step("send_prompt: sent via click")
-                time.sleep(3)
-                return val
-            if not logged_wait:
-                log_step("send_prompt: waiting for send armed")
-                logged_wait = True
-            check = page_eval(sess, sent_check_js).get("value") or {}
-            if check.get("inThread") or check.get("inUserQuery"):
-                log_step("send_prompt: sent via thread_or_user_query")
-                time.sleep(3)
-                return {"ok": True, "sent": True, "via": "thread_or_user_query"}
-            if not tried_enter and time.time() > deadline - timeout_s * 0.6:
-                enter_val = page_eval(sess, submit_enter_js).get("value") or {}
+            cleared = page_eval(sess, cleared_check_js).get("value") or {}
+            if cleared.get("composerEmpty"):
+                via = "enter" if tried_enter else "click"
+                log_step(f"send_prompt: submit CONFIRMED via {via} (composer cleared)")
+                time.sleep(2)
+                return {"ok": True, "sent": True, "via": f"verified-{via}"}
+            if not clicked:
+                c = page_eval(sess, click_js).get("value") or {}
+                if c.get("clicked"):
+                    clicked = True
+                    log_step("send_prompt: clicked Send; verifying it actually submits")
+            if not tried_enter and time.time() > deadline - timeout_s * 0.5:
+                page_eval(sess, submit_enter_js)
                 tried_enter = True
-                if enter_val.get("sent"):
-                    log_step("send_prompt: sent via enter")
-                    time.sleep(3)
-                    return enter_val
-            time.sleep(0.15)
+                log_step("send_prompt: click did not submit yet; tried Enter")
+            time.sleep(0.25)
+        log_step(
+            "send_prompt: submit NOT confirmed — composer never cleared "
+            f"(clicked={clicked}, enter={tried_enter}); the message did NOT send"
+        )
         if attempt == 0:
             continue
-        return val
-    return {"ok": False, "reason": "send_exhausted"}
+        return {
+            "ok": False, "sent": False, "reason": "submit_not_confirmed",
+            "clicked": clicked, "triedEnter": tried_enter,
+        }
+    return {"ok": False, "sent": False, "reason": "send_exhausted"}
 
 
 def _recover_for_retry(sess: BrowserSession) -> None:
