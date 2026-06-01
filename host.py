@@ -58,6 +58,25 @@ def truncate_output(text, max_bytes=MAX_OUTPUT_SIZE):
 
 ATTACH_MAX_BYTES = 25 * 1024 * 1024
 ATTACH_CHUNK_SIZE = 512 * 1024  # base64 characters per chunk
+_DEBUG_LOG = '/home/oreo/Development/Gemini-Chrome-Agent/.cursor/debug-866d96.log'
+
+
+def _dbg_agent(hypothesis_id: str, location: str, message: str, data: dict | None = None) -> None:
+    try:
+        import json
+        entry = {
+            'sessionId': '866d96',
+            'runId': 'pre-fix',
+            'hypothesisId': hypothesis_id,
+            'location': location,
+            'message': message,
+            'data': data or {},
+            'timestamp': int(time.time() * 1000),
+        }
+        with open(_DEBUG_LOG, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(entry) + '\n')
+    except Exception:
+        pass
 
 
 def read_file_b64(path, max_bytes=ATTACH_MAX_BYTES):
@@ -438,6 +457,10 @@ if __name__ == '__main__':
             msg = get_message()
             action = msg.get('action')
             req_id = msg.get('id', 'unknown')
+            _dbg_agent('D', 'host.py:main', 'message received', {
+                'action': action,
+                'id': req_id,
+            })
             start = time.perf_counter()
 
             if action == 'run_shell':
