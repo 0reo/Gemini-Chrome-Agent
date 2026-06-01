@@ -3,6 +3,37 @@
 "Test it in the browser" = **you** launch, attach, inject a real payload, and read the evidence. You do
 not open the browser and hand it back. This file has the exact commands and CDP/MCP probes.
 
+## 0. Look first — before you theorize (Rule 0)
+
+The instant live behavior is wrong, **look at the page** before forming any hypothesis from logs. One
+screenshot routinely beats an hour of log-parsing — in the session that added this, the prompt was simply
+sitting **unsent in the composer** while the harness logged `sent via click`.
+
+```
+list_pages → select_page(<gemini tab>) → take_screenshot      # what does it ACTUALLY look like?
+take_snapshot                                                 # element uids (incl. the real Send button)
+```
+Then probe the two-stage effect (Rule 5) — never trust a "sent"/"injected" log:
+```js
+// evaluate_script: is the INPUT registered, and did the SUBMIT fire?
+() => {
+  const ed = document.querySelector('.ql-editor.textarea') || document.querySelector('.ql-editor');
+  const send = document.querySelector('button[aria-label="Send message"]');
+  return {
+    inputRegistered: ed ? (!ed.classList.contains('ql-blank') && (ed.innerText||'').trim().length>0) : null,
+    composerLen: ed ? (ed.innerText||'').trim().length : null,   // >0 = text still sitting there (NOT submitted)
+    submitFired: ed ? (ed.innerText||'').trim().length===0 : null, // composer cleared = it actually sent
+    newTurn: document.querySelectorAll('user-query, model-response').length,
+    sendArmed: send ? getComputedStyle(send).pointerEvents !== 'none' : 'no-btn',
+  };
+}
+```
+**If send/submit is broken, re-verify the live DOM contract (Rule 6)** — Google ships UI changes (e.g. a
+`new-input-ui` composer). Try each submit path and check the *effect* after a ~2.5 s wait, don't assume:
+`sendBtn.click()` → trusted MCP `click(uid)` → real keystrokes (`fill` the textbox uid) + `press_key("Enter")`.
+If **every** path leaves `composerLen > 0`, the submit is blocked Gemini-side (account/UI), not our code —
+have the user try sending one message **physically** to confirm. (CDP input ≈ physical, but not identical.)
+
 ## 1. Launch the debug Brave
 
 ```bash
