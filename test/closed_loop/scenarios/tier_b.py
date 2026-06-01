@@ -69,10 +69,13 @@ def _prepare_gemini_session(sess) -> None:
         "new Promise(r => chrome.storage.local.set({ cooldownSeconds: 2, maxPerMinute: 60, settlingSeconds: 0 }, r))",
         await_promise=True,
     )
-    from ..gemini_ui import wait_composer_ready, wait_gemini_idle
+    from ..gemini_ui import wait_composer_clear, wait_composer_ready, wait_gemini_idle
 
     click_new_chat(sess)
-    wait_gemini_idle(sess)
+    if not wait_gemini_idle(sess):
+        raise PipelineFailure("setup", "Gemini still generating before session start")
+    if not wait_composer_clear(sess):
+        raise PipelineFailure("setup", "composer not clear before session start")
     if not wait_composer_ready(sess, timeout_s=30.0):
         raise PipelineFailure("setup", "Gemini composer not ready after new chat")
     time.sleep(2)
@@ -142,8 +145,10 @@ def run_file_roundtrip(port: int) -> None:
         wait_cooldown(TurnContext(marker=run_id, host_log_offset=offset))
         from ..gemini_ui import wait_composer_clear, wait_gemini_idle
 
-        wait_gemini_idle(sess, timeout_s=45.0)
-        wait_composer_clear(sess)
+        if not wait_gemini_idle(sess, timeout_s=45.0):
+            raise PipelineFailure("setup", "Gemini still generating before read send")
+        if not wait_composer_clear(sess):
+            raise PipelineFailure("setup", "composer not clear before read send")
 
         offset2 = host_log_offset()
         sent2 = send_prompt(sess, _prompt_read(path), timeout_s=45.0)
@@ -192,8 +197,10 @@ def run_agent_chain(port: int) -> None:
         wait_cooldown(ctx1)
         from ..gemini_ui import wait_composer_clear, wait_gemini_idle
 
-        wait_gemini_idle(sess, timeout_s=45.0)
-        wait_composer_clear(sess)
+        if not wait_gemini_idle(sess, timeout_s=45.0):
+            raise PipelineFailure("setup", "Gemini still generating before turn2 send")
+        if not wait_composer_clear(sess):
+            raise PipelineFailure("setup", "composer not clear before turn2 send")
 
         # Turn 2: read file
         offset2 = host_log_offset()
