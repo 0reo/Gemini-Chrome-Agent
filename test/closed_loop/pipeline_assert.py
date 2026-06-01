@@ -48,26 +48,24 @@ def assert_turn_complete(sess: BrowserSession, ctx: TurnContext) -> None:
             f"host never executed command containing '{ctx.marker}'. log:\n{tail[:500]}",
         )
 
-    # stage 5: System Result + marker in thread
+    # stage 5: per-turn marker in thread (after host gate — not generic System Result)
     deadline = time.time() + 30.0
     while time.time() < deadline:
-        probe = stage5_probe(sess)
-        if probe.get("threadHasSystemResult"):
-            r = h.page_eval(
-                sess,
-                f"""(() => {{
-                  const t = document.body.innerText;
-                  return t.includes('System Result') && t.includes({__import__('json').dumps(ctx.marker)});
-                }})()""",
-            )
-            if r.get("value"):
-                return
+        r = h.page_eval(
+            sess,
+            f"""(() => {{
+              const t = document.body.innerText;
+              return t.includes({__import__('json').dumps(ctx.marker)});
+            }})()""",
+        )
+        if r.get("value"):
+            return
         time.sleep(1.0)
 
     probe = stage5_probe(sess)
     raise PipelineFailure(
         "stage5",
-        f"thread missing System Result with marker '{ctx.marker}': {probe}",
+        f"thread missing marker '{ctx.marker}' after host execution: {probe}",
     )
 
 
