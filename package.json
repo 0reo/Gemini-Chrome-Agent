@@ -13,6 +13,9 @@
     "zip:firefox": "wxt zip -b firefox",
     "compile": "tsc --noEmit",
     "test": "vitest run",
+    "test:browser:smoke": "python3 test/e2e_browser.py 9222",
+    "test:closed-loop": "python3 -m test.closed_loop.run --tier A",
+    "test:closed-loop:live": "python3 -m test.closed_loop.run --tier B",
     "postinstall": "wxt prepare"
   },
   "devDependencies": {
