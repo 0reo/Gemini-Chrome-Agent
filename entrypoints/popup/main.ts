@@ -76,7 +76,7 @@ function render(
   const btn = document.getElementById('toggle-btn');
   btn?.addEventListener('click', async () => {
     const { isAgentPaused } = await browser.storage.local.get('isAgentPaused');
-    const current = isAgentPaused !== false;
+    const current = isAgentPaused === true;
     await browser.storage.local.set({ isAgentPaused: !current });
     render(!current ? 'paused' : 'active', cooldownSeconds, maxPerMinute, settlingSeconds, logsCount, advancedOpen, autoSubmit);
   });
@@ -192,7 +192,7 @@ async function init() {
 
   const logs = await getLogs();
   render(
-    isAgentPaused !== false ? 'paused' : 'active',
+    isAgentPaused === true ? 'paused' : 'active',
     typeof cooldownSeconds === 'number' ? cooldownSeconds : DEFAULTS.cooldownSeconds,
     typeof maxPerMinute === 'number' ? maxPerMinute : DEFAULTS.maxPerMinute,
     typeof settlingSeconds === 'number' ? settlingSeconds : DEFAULTS.settlingSeconds,

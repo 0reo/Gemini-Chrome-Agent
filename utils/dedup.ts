@@ -1,5 +1,5 @@
 import { CONFIG } from './config';
-import { hashPayload } from './protocol';
+import { hashPayloadContent } from './protocol';
 import type { AgentPayload } from './types';
 import { debug } from './logger';
 
@@ -8,7 +8,7 @@ let lastCleanup = 0;
 
 export function isRecentlyProcessed(payload: AgentPayload): boolean {
   const now = Date.now();
-  const hash = hashPayload(payload);
+  const hash = hashPayloadContent(payload);
 
   if (now - lastCleanup > CONFIG.CLEANUP_INTERVAL_MS) {
     lastCleanup = now;
@@ -24,12 +24,11 @@ export function isRecentlyProcessed(payload: AgentPayload): boolean {
     return true;
   }
 
-  processedPayloads.set(hash, now);
   return false;
 }
 
 export function markPayloadProcessed(payload: AgentPayload): void {
-  const hash = hashPayload(payload);
+  const hash = hashPayloadContent(payload);
   processedPayloads.set(hash, Date.now());
 }
 

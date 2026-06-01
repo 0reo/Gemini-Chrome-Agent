@@ -27,6 +27,12 @@ export function isValidPayload(payload: unknown): payload is AgentPayload {
   return true;
 }
 
+/** Dedup key: action fields only — ignores ephemeral `id` assigned at dispatch time. */
+export function hashPayloadContent(payload: AgentPayload): string {
+  const { id: _id, ...content } = payload;
+  return hashPayload({ ...content, action: payload.action } as AgentPayload);
+}
+
 export function hashPayload(payload: AgentPayload): string {
   try {
     const canonical = JSON.stringify(payload, Object.keys(payload).sort());

@@ -1,4 +1,5 @@
 import { CONFIG } from '@/utils/config';
+import { dbgAgent } from '@/utils/debug-agent-log';
 import { info, warn, error } from '@/utils/logger';
 import { isValidPayload, generateId } from '@/utils/protocol';
 import { isRecentlyProcessed, markPayloadProcessed } from '@/utils/dedup';
@@ -17,6 +18,10 @@ export default defineContentScript({
     const pageLoadTime = Date.now();
     const attachAssemblers = new Map<string, AttachAssembler>();
     const attachRequests = new Map<string, { source: 'gemini' | 'popup'; prompt?: string }>();
+    /** Action JSON blocks already in the DOM when this script loaded — never auto-run. */
+    const blocksPresentAtLoad = new WeakSet<Element>();
+    /** Action JSON blocks already dispatched this session — never re-run same DOM node. */
+    const executedBlocks = new WeakSet<Element>();
 
     // Dynamic settings (overridable via storage)
     let cooldownMs: number = CONFIG.COOLDOWN_MS;
@@ -59,6 +64,15 @@ export default defineContentScript({
       return state === 'paused';
     }
 
+    function scheduleScan(): void {
+      if (isPaused() || state === 'cooldown') {
+        dbgAgent('A', 'content.ts:scheduleScan', 'scan skipped', { state, paused: isPaused() });
+        return;
+      }
+      if (scanTimeout) clearTimeout(scanTimeout);
+      scanTimeout = window.setTimeout(scanForPayloads, CONFIG.SCAN_DEBOUNCE_MS);
+    }
+
     function setCooldown(): void {
       setState('cooldown');
       if (cooldownTimer) clearTimeout(cooldownTimer);
@@ -86,14 +100,18 @@ export default defineContentScript({
     // --- Init settings & pause state ---
     loadSettings().then(() => {
       browser.storage.local.get('isAgentPaused').then(({ isAgentPaused }) => {
-        const paused = isAgentPaused !== false; // default to paused
+        const paused = isAgentPaused === true;
         if (paused) {
           setState('paused');
         } else {
           setState('settling');
-          window.setTimeout(() => setState('armed'), settlingPeriodMs);
+          window.setTimeout(() => {
+            setState('armed');
+            scheduleScan();
+          }, settlingPeriodMs);
         }
         info('Initial pause state synced', { paused });
+        dbgAgent('A', 'content.ts:init', 'pause state loaded', { paused, state });
       });
     });
 
@@ -101,7 +119,7 @@ export default defineContentScript({
       if (area !== 'local') return;
 
       if (changes.isAgentPaused) {
-        const paused = changes.isAgentPaused.newValue !== false;
+        const paused = changes.isAgentPaused.newValue === true;
         if (paused) {
           setState('paused');
         } else {
@@ -110,6 +128,7 @@ export default defineContentScript({
             clearTimeout(cooldownTimer);
             cooldownTimer = null;
           }
+          scheduleScan();
         }
         info('Pause state synced via storage', { paused });
       }
@@ -150,57 +169,86 @@ export default defineContentScript({
       }
     });
 
-    // --- Mark existing blocks on load ---
-    function markExistingBlocks(): void {
+    // --- Record action blocks already on the page (chat history) — do not auto-run ---
+    function recordBlocksPresentAtLoad(): void {
       const blocks = document.querySelectorAll('pre code, code');
-      let marked = 0;
+      let recorded = 0;
       for (const block of blocks) {
         const text = block.textContent || '';
         if (!text.includes('"action"')) continue;
         try {
           const payload = JSON.parse(text) as AgentPayload;
           if (isValidPayload(payload)) {
-            markPayloadProcessed(payload);
-            marked++;
+            blocksPresentAtLoad.add(block);
+            recorded++;
           }
         } catch {
           // Not valid JSON
         }
       }
-      if (marked > 0) {
-        info(`Marked ${marked} existing payload(s) as processed`);
+      if (recorded > 0) {
+        info(`Recorded ${recorded} historical action block(s) (will not auto-run)`);
+        dbgAgent('C', 'content.ts:recordBlocksPresentAtLoad', 'recorded at load', { recorded });
       }
     }
 
     // --- Debounced Payload Detection ---
     const observer = new MutationObserver(() => {
-      if (isPaused() || state === 'cooldown') return;
-      if (scanTimeout) clearTimeout(scanTimeout);
-      scanTimeout = window.setTimeout(scanForPayloads, CONFIG.SCAN_DEBOUNCE_MS);
+      scheduleScan();
     });
 
     function scanForPayloads(): void {
       scanTimeout = null;
       const settling = isSettling();
       const blocks = document.querySelectorAll('pre code, code');
+      let withAction = 0;
+      let executed = 0;
 
       for (const block of blocks) {
         const text = block.textContent || '';
         if (!text.includes('"action"')) continue;
+        withAction++;
 
         try {
           const payload = JSON.parse(text) as AgentPayload;
-          if (!isValidPayload(payload)) continue;
-          if (isRecentlyProcessed(payload)) continue;
-
-          if (settling) {
-            info('Settling: ignored historical payload', { action: payload.action });
+          if (!isValidPayload(payload)) {
+            dbgAgent('E', 'content.ts:scanForPayloads', 'invalid payload', {
+              snippet: text.slice(0, 120),
+            });
             continue;
           }
 
+          if (settling) {
+            info('Settling: ignored historical payload', { action: payload.action });
+            dbgAgent('C', 'content.ts:scanForPayloads', 'settling skip', { action: payload.action });
+            continue;
+          }
+
+          if (blocksPresentAtLoad.has(block)) {
+            dbgAgent('C', 'content.ts:scanForPayloads', 'historical block skip', { action: payload.action });
+            continue;
+          }
+
+          if (executedBlocks.has(block)) {
+            dbgAgent('C', 'content.ts:scanForPayloads', 'executed block skip', { action: payload.action });
+            continue;
+          }
+
+          if (isRecentlyProcessed(payload)) {
+            dbgAgent('C', 'content.ts:scanForPayloads', 'dedup skip', { action: payload.action });
+            continue;
+          }
+
+          markPayloadProcessed(payload);
+          executedBlocks.add(block);
           if (!payload.id) {
             payload.id = generateId();
           }
+          executed++;
+          dbgAgent('OK', 'content.ts:scanForPayloads', 'dispatching to host', {
+            action: payload.action,
+            id: payload.id,
+          });
           // Capture chat context for debugging
           const context = extractChatContext(block);
           info('Executing action', { action: payload.action, id: payload.id, context });
@@ -211,9 +259,18 @@ export default defineContentScript({
           setCooldown();
           trackExecution();
         } catch {
-          // JSON parse failed — block is still streaming
+          dbgAgent('B', 'content.ts:scanForPayloads', 'json parse failed', {
+            snippet: text.slice(0, 120),
+          });
         }
       }
+      dbgAgent('B', 'content.ts:scanForPayloads', 'scan complete', {
+        state,
+        settling,
+        blockCount: blocks.length,
+        withAction,
+        executed,
+      });
     }
 
     // Extract surrounding chat context for a given code block element
@@ -239,7 +296,7 @@ export default defineContentScript({
       return '';
     }
 
-    markExistingBlocks();
+    recordBlocksPresentAtLoad();
     observer.observe(document.body, { childList: true, subtree: true, characterData: true });
 
     // --- Response Injection ---
@@ -260,7 +317,15 @@ export default defineContentScript({
           return;
         }
         if (message.data) {
+          dbgAgent('D', 'content.ts:HOST_RESPONSE', 'host response', {
+            id: message.data.id,
+            status: message.data.status,
+          });
           const injected = injectResponse(message.data);
+          dbgAgent('D', 'content.ts:HOST_RESPONSE', 'inject result', {
+            injected,
+            hasOutput: !!(message.data.output || message.data.error || message.data.message),
+          });
           if (injected) {
             // Read auto-submit fresh from storage to avoid a stale in-memory value.
             // Default ON (the agent loop's whole point) — and keep that default on a

@@ -3,6 +3,7 @@ import {
   generateId,
   isValidPayload,
   hashPayload,
+  hashPayloadContent,
   createRequestPayload,
   createSuccessResponse,
   createErrorResponse,
@@ -119,6 +120,14 @@ describe('hashPayload', () => {
     const p1: AgentPayload = { id: '1', action: 'run_shell', command: 'echo hi' };
     const p2: AgentPayload = { id: '2', action: 'run_shell', command: 'echo hi' };
     expect(hashPayload(p1)).not.toBe(hashPayload(p2));
+  });
+});
+
+describe('hashPayloadContent', () => {
+  it('ignores id when hashing for dedup', () => {
+    const p1: AgentPayload = { id: 'a', action: 'run_shell', command: 'echo hi' };
+    const p2: AgentPayload = { id: 'b', action: 'run_shell', command: 'echo hi' };
+    expect(hashPayloadContent(p1)).toBe(hashPayloadContent(p2));
   });
 });
 
