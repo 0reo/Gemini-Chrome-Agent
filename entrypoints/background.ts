@@ -1,5 +1,4 @@
 import { CONFIG } from '@/utils/config';
-import { dbgAgent } from '@/utils/debug-agent-log';
 import { info, warn, error } from '@/utils/logger';
 import type { ExtensionMessage, HostResponse } from '@/utils/types';
 
@@ -32,9 +31,6 @@ export default defineBackground(() => {
       const lastError = browser.runtime.lastError;
       if (lastError) {
         error('Native host disconnected with error', { message: lastError.message });
-        dbgAgent('D', 'background.ts:onDisconnect', 'native host error', {
-          message: lastError.message,
-        });
       } else {
         info('Native host disconnected (clean)');
       }
@@ -80,11 +76,6 @@ export default defineBackground(() => {
   // Listen for messages from content scripts
   browser.runtime.onMessage.addListener((request: ExtensionMessage, sender) => {
     if (request.type === 'SEND_TO_HOST' && request.payload) {
-      dbgAgent('D', 'background.ts:SEND_TO_HOST', 'forwarding', {
-        id: request.payload.id,
-        action: request.payload.action,
-        hasPort: !!port,
-      });
       info('Forwarding payload to host', { id: request.payload.id, action: request.payload.action });
 
       if (sender.tab?.id) {
