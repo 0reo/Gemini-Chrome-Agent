@@ -137,13 +137,12 @@ def wait_gemini_idle(sess: BrowserSession, timeout_s: float = 30.0) -> bool:
               const latest = responses.length ? responses[responses.length - 1] : null;
               const streaming = latest && latest.querySelector(
                 '.processing-state-visible, mat-spinner, .thinking, [aria-busy="true"], .loading-response');
-              const globalBusy = document.querySelector(
-                'mat-spinner, [aria-busy="true"], .loading-response, .thinking');
               const send = document.querySelector('button[aria-label="Send message"]')
                 || document.querySelector('button.send');
               return {
-                busy: !!(streaming || globalBusy),
+                busy: !!streaming,
                 sendPe: send ? getComputedStyle(send).pointerEvents : 'none',
+                responseCount: responses.length,
               };
             })()""",
         )
@@ -235,11 +234,22 @@ def send_prompt(
     if not wait_composer_clear(sess):
         return {"ok": False, "reason": "composer_not_clear"}
     payload = json.dumps(text)
-    snippet = json.dumps(text[:80])
+    snippet = json.dumps(text[-80:])  # unique tail (path/marker), NOT the shared preamble
     insert_js = f"""(() => {{
       const el = document.querySelector('.ql-editor.textarea') || document.querySelector('.ql-editor');
       if (!el) return {{ ok: false, reason: 'no_composer' }};
       el.focus();
+      // focus() alone does not place a caret inside a freshly-blank Quill editor, so
+      // execCommand('insertText') no-ops on the 2nd+ turn (0-char insert). Put a collapsed
+      // selection inside the editor first.
+      try {{
+        const sel = window.getSelection();
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        range.collapse(false);
+        sel.removeAllRanges();
+        sel.addRange(range);
+      }} catch (e) {{}}
       const existing = (el.innerText || el.textContent || '').trim();
       if (existing.length > 0) {{
         document.execCommand('selectAll', false, undefined);
@@ -322,7 +332,11 @@ def send_prompt(
     sent_check_js = f"""(() => {{
       const el = document.querySelector('.ql-editor.textarea') || document.querySelector('.ql-editor');
       const blank = el ? (el.classList.contains('ql-blank') || (el.innerText||'').trim().length === 0) : false;
-      return {{ inThread: document.body.innerText.includes({snippet}), composerBlank: blank }};
+      const snippet = {snippet};
+      const inThread = document.body.innerText.includes(snippet);
+      const inUserQuery = [...document.querySelectorAll('user-query, .query-text, .user-query-bubble-with-background')]
+        .some(n => (n.textContent||'').includes(snippet));
+      return {{ inThread, inUserQuery, composerBlank: blank }};
     }})()"""
 
     for attempt in range(2):
@@ -333,6 +347,12 @@ def send_prompt(
         if not inserted.get("ok"):
             return inserted if inserted else {"ok": False, "reason": "insert_failed"}
         log_step(f"send_prompt: inserted ({inserted.get('composerLen', '?')} chars)")
+        if not inserted.get("composerLen"):
+            if attempt == 0:
+                log_step("send_prompt: 0 chars inserted; retrying with fresh focus")
+                continue
+            log_step("send_prompt: 0 chars inserted after retry; failing")
+            return {"ok": False, "sent": False, "reason": "insert_empty"}
         deadline = time.time() + timeout_s
         val: dict = {"ok": False, "sent": False, "reason": "send_not_armed"}
         tried_enter = False
@@ -347,10 +367,10 @@ def send_prompt(
                 log_step("send_prompt: waiting for send armed")
                 logged_wait = True
             check = page_eval(sess, sent_check_js).get("value") or {}
-            if check.get("inThread") or check.get("composerBlank"):
-                log_step("send_prompt: sent via thread_or_blank")
+            if check.get("inThread") or check.get("inUserQuery"):
+                log_step("send_prompt: sent via thread_or_user_query")
                 time.sleep(3)
-                return {"ok": True, "sent": True, "via": "thread_or_blank"}
+                return {"ok": True, "sent": True, "via": "thread_or_user_query"}
             if not tried_enter and time.time() > deadline - timeout_s * 0.6:
                 enter_val = page_eval(sess, submit_enter_js).get("value") or {}
                 tried_enter = True
@@ -386,18 +406,37 @@ def click_new_chat(sess: BrowserSession) -> bool:
           const el = [...document.querySelectorAll('a,button,[role="button"]')].find(e =>
             /new chat/i.test((e.textContent||'') + (e.getAttribute('aria-label')||'')));
           if (el && clickEl(el)) return { ok: true, via: 'text' };
-          const cur = location.pathname || '';
-          if (!cur.endsWith('/app') || cur.split('/').length > 2) {
-            location.href = 'https://gemini.google.com/app';
-            return { ok: true, via: 'navigate' };
-          }
-          return { ok: false, reason: 'new_chat_control_not_found' };
+          location.href = 'https://gemini.google.com/app';
+          return { ok: true, via: 'navigate' };
         })()""",
     )
     val = r.get("value") or {}
     if val.get("ok"):
         time.sleep(3)
     return bool(val.get("ok"))
+
+
+def _response_count(sess: BrowserSession) -> int:
+    r = page_eval(
+        sess,
+        """(() => document.querySelectorAll('model-response').length)()""",
+    )
+    return int(r.get("value") or 0)
+
+
+def ensure_fresh_chat(sess: BrowserSession) -> None:
+    """Start a clean chat thread (no stale model-response nodes)."""
+    for attempt in range(3):
+        click_new_chat(sess)
+        if _response_count(sess) == 0:
+            return
+        page_eval(sess, "location.href = 'https://gemini.google.com/app';")
+        time.sleep(4)
+    if _response_count(sess) > 0:
+        raise PipelineFailure(
+            "setup",
+            f"could not start fresh Gemini chat ({_response_count(sess)} stale responses)",
+        )
 
 
 def prompt_visible_in_thread(sess: BrowserSession, needle: str, timeout_s: float = 25.0) -> bool:
