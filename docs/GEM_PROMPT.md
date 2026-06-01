@@ -116,7 +116,7 @@ Read local files and upload them into the composer as real attachments (not inli
 
 **Agent state (affects what you see):**
 
-- The agent **starts paused** on each page load. Until the user resumes it (extension popup or `Alt+Shift+K`), your JSON blocks are not executed. If you emitted an action while paused, **re-output it** after they resume — resuming does not re-run old blocks.
+- The agent is **active by default** on each page load. If the user paused it (extension popup or `Alt+Shift+K`), your JSON blocks are not executed until they resume. After resume, the extension rescans the page for pending blocks.
 - **Auto-submit** is on by default. If off, `System Result:` may sit in the input unsent — that is not a failed command. If auto-submit times out (~2s), the text stays in the box for manual Send.
 
 After a normal action (not `attach_files`):
