@@ -142,6 +142,22 @@ npm run test       # vitest: TypeScript unit tests (utils/*.test.ts)
 python3 -m unittest discover -s test    # Python host tests (run from repo root so `import host` resolves)
 ```
 
+**Closed-loop live harness** (CDP on `:9222`, debug Brave — see below):
+
+```bash
+./scripts/launch-debug-brave.sh   # if CDP is not already up
+npm run build
+npm run test:browser:smoke        # extension SW + content script on Gemini
+npm run test:closed-loop          # Tier A: pipeline regressions (no Gemini model)
+npm run test:closed-loop:live     # Tier B: real Gemini multi-turn (logged-in gla-debug-profile)
+python3 -m test.closed_loop.run --scenario rerun_latest   # Tier C: rerun-last-action UX
+python3 -m test.closed_loop.run --list
+```
+
+Scenarios and timing rules: `.claude/skills/debugging-gemini-agent/knowledge/closed-loop-scenarios.md`.
+Ad-hoc probes (`test/live_browser_agent.py`, `test/loop_dedup_browser.py`) are deprecated in favor of
+the harness. Shared CDP client: `test/e2e_browser.py` (also used by `test/e2e_pipeline.py`).
+
 `npm run dev` gives a hot-reload build for development. The Gemini DOM layer is not
 unit-tested — verify it live (see **Gemini DOM facts** and `docs/DEBUGGING.md`).
 

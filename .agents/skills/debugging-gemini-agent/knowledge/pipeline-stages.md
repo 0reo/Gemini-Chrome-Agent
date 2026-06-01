@@ -7,17 +7,16 @@ Walk this **backward** from stage 5 when diagnosing "nothing happened" (see the 
 
 ## Stage 1 — DETECT  (`entrypoints/content.ts` → `scanForPayloads`)
 
-A `MutationObserver` on `document.body` debounces, then `scanForPayloads()` walks `pre code, code`
-nodes, keeps ones whose text contains `"action"`, `JSON.parse`s them, and validates via
-`isValidPayload()` (8 actions: `run_shell`, `write_file`, `read_file`, `list_files`, `git_status`,
-`git_diff`, `run_python`, `attach_files`).
+A `MutationObserver` on `document.body` debounces, then `scanForPayloads()` walks
+`pre code, code, pre code.language-json, pre code.hljs` nodes, keeps ones whose text contains
+`"action"`, `JSON.parse`s them, and validates via `isValidPayload()` (8 actions).
 
-**Evidence (page console):** every scan ends with
-`dbgAgent('B', … 'scan complete', { state, settling, blockCount, withAction, executed })`.
-- `withAction === 0` → the JSON is **not in a `<pre><code>`/`<code>` node**, or doesn't contain `"action"`.
-  Gemini sometimes renders inline or wraps differently while streaming. **This is a detection bug.**
-- `withAction > 0` but `executed === 0` → detection worked; a **guard** (stage 2) dropped it, or it was
-  invalid (`invalid payload` dbg line).
+**Evidence (page console, `[Gemini Agent]`):** `Scan dispatched payloads` when a new block runs;
+`Settling: ignored historical payload` during the first N seconds; no line after a visible JSON block
+→ detection or guard failure.
+- No matching code node → JSON not in scanner selectors (run `dom_audit` scenario or see
+  `closed-loop-scenarios.md`).
+- Block visible but no dispatch → **guard** (stage 2): historical, executed, dedup, paused, cooldown.
 
 **Common real cause:** the user copied prose around the JSON, or Gemini emitted it inline (no code
 fence). No `<pre><code>` → never detected.
