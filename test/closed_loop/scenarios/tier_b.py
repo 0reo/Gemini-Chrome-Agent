@@ -8,12 +8,9 @@ import time
 import uuid
 
 from ..gemini_ui import (
-    click_new_chat,
     ensure_fast_model,
     ensure_fresh_chat,
-    prompt_visible_in_thread,
-    send_prompt,
-    wait_for_action_codeblock,
+    send_until_action,
     wait_for_thread_marker,
 )
 from ..harness import (
@@ -109,23 +106,8 @@ def run_shell_roundtrip(port: int) -> None:
         marker = f"gla_b1_{uuid.uuid4().hex[:8]}"
         offset = host_log_offset()
         prompt = _prompt_shell(marker)
-        from ..gemini_ui import _gemini_said_count, wait_for_gemini_reply
-
-        baseline = _gemini_said_count(sess)
         log_step(f"shell_roundtrip: turn1 send (marker={marker})")
-        sent = send_prompt(sess, prompt, timeout_s=45.0)
-        if not sent.get("sent"):
-            raise PipelineFailure("setup", f"could not send prompt: {sent}")
-
-        if not wait_for_gemini_reply(sess, timeout_s=120.0, baseline_said=baseline):
-            raise PipelineFailure("stage1", "Gemini did not start a reply")
-        log_step("shell_roundtrip: waiting for action JSON")
-        blocks = wait_for_action_codeblock(sess, marker, timeout_s=300.0)
-        if not blocks:
-            raise PipelineFailure(
-                "stage1",
-                f"Gemini did not emit action JSON with marker {marker}",
-            )
+        send_until_action(sess, prompt, marker, retries=3)
         ctx = TurnContext(marker=marker, host_log_offset=offset)
         log_step("shell_roundtrip: assert_turn_complete")
         assert_turn_complete(sess, ctx)
@@ -144,12 +126,10 @@ def run_file_roundtrip(port: int) -> None:
         offset = host_log_offset()
 
         log_step(f"file_roundtrip: turn1 write ({path})")
-        sent1 = send_prompt(sess, _prompt_write(path, content), timeout_s=45.0)
-        if not sent1.get("sent"):
-            raise PipelineFailure("setup", f"write prompt not sent: {sent1}")
-        blocks = wait_for_action_codeblock(sess, "write_file", timeout_s=180.0)
-        if not blocks or not any(run_id in (b.get("snippet") or "") for b in blocks):
-            raise PipelineFailure("stage1", "write_file JSON block not emitted")
+        send_until_action(
+            sess, _prompt_write(path, content), "write_file", retries=3,
+            validate=lambda bs: any(run_id in (b.get("snippet") or "") for b in bs),
+        )
         deadline = time.time() + 60.0
         while time.time() < deadline:
             from ..harness import host_log_tail
@@ -163,7 +143,7 @@ def run_file_roundtrip(port: int) -> None:
             raise PipelineFailure("stage5", "write_file System Result missing")
         log_step("file_roundtrip: turn1 complete, cooldown before read")
         wait_cooldown(TurnContext(marker=run_id, host_log_offset=offset, cooldown_wait_s=6.0))
-        from ..gemini_ui import _gemini_said_count, wait_composer_clear, wait_for_gemini_reply
+        from ..gemini_ui import wait_composer_clear
 
         deadline = time.time() + 120.0
         while time.time() < deadline:
@@ -176,13 +156,7 @@ def run_file_roundtrip(port: int) -> None:
 
         offset2 = host_log_offset()
         log_step("file_roundtrip: turn2 read")
-        baseline2 = _gemini_said_count(sess)
-        sent2 = send_prompt(sess, _prompt_read(path), timeout_s=60.0)
-        if not sent2.get("sent"):
-            raise PipelineFailure("setup", f"read prompt not sent: {sent2}")
-        blocks2 = wait_for_action_codeblock(sess, "read_file", timeout_s=300.0)
-        if not blocks2:
-            raise PipelineFailure("stage1", "read_file JSON block not emitted")
+        send_until_action(sess, _prompt_read(path), "read_file", retries=3)
         from ..harness import host_exec_count
 
         deadline = time.time() + 60.0
@@ -213,28 +187,15 @@ def run_agent_chain(port: int) -> None:
         offset = host_log_offset()
 
         m1 = f"gla_chain_{run_id}"
-        from ..gemini_ui import (
-            _gemini_said_count,
-            wait_composer_clear,
-            wait_for_gemini_reply,
-            wait_gemini_idle,
-        )
+        from ..gemini_ui import wait_composer_clear
 
-        baseline = _gemini_said_count(sess)
         log_step(f"agent_chain: turn1 shell (marker={m1})")
-        sent = send_prompt(
+        send_until_action(
             sess,
             f"{_GEMINI_JSON_RULE}\n"
             f'Execute now: {{"action":"run_shell","command":"uname -a | head -1 > {path} && echo {m1}"}}',
-            timeout_s=60.0,
+            m1, retries=3,
         )
-        if not sent.get("sent"):
-            raise PipelineFailure("setup", "turn1 send failed")
-        if not wait_for_gemini_reply(sess, timeout_s=120.0, baseline_said=baseline):
-            raise PipelineFailure("stage1", "Gemini did not start turn1 reply")
-        blocks = wait_for_action_codeblock(sess, m1, timeout_s=180.0)
-        if not blocks:
-            raise PipelineFailure("stage1", f"turn1 JSON missing marker {m1}")
         ctx1 = TurnContext(marker=m1, host_log_offset=offset, cooldown_wait_s=4.0)
         log_step("agent_chain: turn1 assert_turn_complete")
         assert_turn_complete(sess, ctx1)
@@ -255,19 +216,7 @@ def run_agent_chain(port: int) -> None:
         # Turn 2: read file
         offset2 = host_log_offset()
         log_step("agent_chain: turn2 read")
-        sent2 = None
-        for attempt in range(2):
-            sent2 = send_prompt(sess, _prompt_read(path), timeout_s=60.0)
-            if sent2.get("sent"):
-                break
-            log_step(f"agent_chain: turn2 send retry ({attempt + 1})")
-            wait_composer_clear(sess, timeout_s=30.0)
-            time.sleep(2)
-        if not sent2 or not sent2.get("sent"):
-            raise PipelineFailure("setup", f"turn2 send failed: {sent2}")
-        blocks2 = wait_for_action_codeblock(sess, "read_file", timeout_s=300.0)
-        if not blocks2:
-            raise PipelineFailure("stage1", "turn2 read_file JSON missing")
+        send_until_action(sess, _prompt_read(path), "read_file", retries=3)
         from ..harness import host_exec_count
 
         deadline = time.time() + 60.0

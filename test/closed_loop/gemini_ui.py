@@ -385,6 +385,57 @@ def send_prompt(
     return {"ok": False, "reason": "send_exhausted"}
 
 
+def _recover_for_retry(sess: BrowserSession) -> None:
+    """Best-effort: settle Gemini and clear the composer before a re-send."""
+    wait_gemini_idle(sess, timeout_s=30.0)
+    wait_composer_clear(sess, timeout_s=15.0)
+    time.sleep(2)
+
+
+def send_until_action(
+    sess: BrowserSession,
+    text: str,
+    action_or_marker: str,
+    *,
+    retries: int = 3,
+    reply_timeout_s: float = 60.0,
+    action_timeout_s: float = 90.0,
+    validate=None,
+) -> list:
+    """Send `text` and wait for Gemini to emit an action codeblock matching
+    `action_or_marker`, re-sending the SAME prompt up to `retries` times.
+
+    The live model intermittently doesn't reply, or replies without the JSON
+    action block. Each retry is logged loudly ('send-retry N/R: ...'). ONLY the
+    send/await-emit step is retried here — callers keep their downstream host-gated
+    assertions un-retried, so a genuinely broken pipeline still fails the scenario
+    (no false greens). Returns the matching blocks; raises PipelineFailure when exhausted.
+    """
+    from .pipeline_assert import PipelineFailure  # sibling module; local import avoids cycle
+
+    last = "unknown"
+    for attempt in range(1, retries + 1):
+        baseline = _gemini_said_count(sess)
+        sent = send_prompt(sess, text, timeout_s=45.0)
+        if not sent.get("sent"):
+            last = f"send not confirmed ({sent.get('reason')})"
+        elif not wait_for_gemini_reply(sess, timeout_s=reply_timeout_s, baseline_said=baseline):
+            last = "Gemini did not reply"
+        else:
+            blocks = wait_for_action_codeblock(sess, action_or_marker, timeout_s=action_timeout_s)
+            if blocks and (validate is None or validate(blocks)):
+                if attempt > 1:
+                    log_step(f"send-retry: emitted {action_or_marker!r} on attempt {attempt}/{retries}")
+                return blocks
+            last = f"no action block for {action_or_marker!r}"
+        log_step(f"send-retry {attempt}/{retries}: {last}")
+        if attempt < retries:
+            _recover_for_retry(sess)
+    raise PipelineFailure(
+        "stage1", f"Gemini did not emit {action_or_marker!r} after {retries} sends ({last})"
+    )
+
+
 def click_new_chat(sess: BrowserSession) -> bool:
     r = page_eval(
         sess,
