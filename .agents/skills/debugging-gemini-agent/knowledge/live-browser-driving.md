@@ -125,6 +125,36 @@ Or set storage directly **from the service-worker context** (not the page):
 python3 .agents/skills/debugging-gemini-agent/scripts/diagnose.py [port]
 ```
 
+## Tab & window hygiene — reuse, never spawn (do this every time)
+
+Spawning a fresh tab/window per action is the most common live-debugging annoyance here, and it actively
+breaks debugging: each new tab reloads the content script (re-arming the settling window and re-recording
+`blocksPresentAtLoad`), and a second Gemini tab means responses may route to the wrong one. **One debug
+Brave, one Gemini tab, for the whole session.**
+
+- **Select the existing tab; do not navigate-to-URL or open a new one.** Every cycle: `list_pages` first.
+  If a `gemini.google.com` tab already exists, **`select_page`** it and operate on it. Do **not** call
+  `new_page`, and do **not** `navigate_page` to a `gemini.google.com` URL just to "get there" — on most
+  chrome-devtools-mcp builds that opens/loads a *fresh* page instead of reusing the one you have.
+- **Only `navigate_page` the already-selected tab**, and only when you actually need to change its URL
+  (e.g. start a new chat). Navigating the selected page reuses it; spawning a new page does not.
+- **`close_page` needs a target.** `close_page` with empty args is a no-op/ambiguous — pass the specific
+  `pageId`/`pageIdx` of the stray tab from `list_pages`. After any test that created tabs, close them so
+  exactly one Gemini tab remains.
+- **Never relaunch the debug Brave while one is already up.** `scripts/launch-debug-brave.sh` guards port
+  `:9222` and will refuse a second instance; if CDP is up, attach to it — do not start another window.
+  Only relaunch after confirming `:9222` is actually down (`curl -s http://127.0.0.1:9222/json/version`).
+- **Reuse the persistent profile** (`gla-debug-profile`) — it keeps the Google login, so there is never a
+  reason to spawn a clean window mid-session.
+
+Canonical reuse pattern:
+```
+list_pages
+→ find the gemini.google.com page  →  select_page(thatId)        # reuse it
+→ (only if you must change URL)     →  navigate_page(url) on it
+→ created a scratch tab?            →  close_page(thatId)         # clean up, leave ONE gemini tab
+```
+
 ## Operational gotchas (learned the hard way)
 
 - **Port contention looks like "the extension is blocking CDP."** Two Brave instances both binding `:9222`

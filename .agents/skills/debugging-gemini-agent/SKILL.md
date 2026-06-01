@@ -61,7 +61,9 @@ code around a cause that wasn't there, having never read a single runtime surfac
 3. **"Test in the browser" means YOU drive it.** Launch the debug Brave, attach via the `brave-debug`
    MCP (or CDP), inject a real payload, and read console + DOM + host log *yourself*. **Never** open the
    browser and hand it back ("you can test it now" / "check the chat"). If you cannot drive it, say so
-   and say why — do not offload the observation.
+   and say why — do not offload the observation. **Reuse one debug Brave and one Gemini tab**
+   (`list_pages` → `select_page`); never `new_page` / navigate-to-URL a fresh tab or relaunch Brave while
+   one is up (see `knowledge/live-browser-driving.md` → *Tab & window hygiene*).
 4. **Do not edit code until evidence confirms the diagnosis.** A guard that *could* swallow a payload
    is not proof that it *did*. Reproduce with evidence first; patch second.
 
