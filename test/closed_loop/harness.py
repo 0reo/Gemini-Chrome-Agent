@@ -22,6 +22,33 @@ HOST_LOG = "/tmp/gemini_host.log"
 SETTLING_WAIT_S = 6
 DEFAULT_COOLDOWN_WAIT_S = 16
 
+_ACTION_LOG_MARKERS: dict[str, str] = {
+    "read_file": "Reading file:",
+    "write_file": "Writing file:",
+    "run_shell": "Executing shell command:",
+    "run_python": "Running Python code",
+    "git_status": "Git status",
+    "git_diff": "Git diff",
+    "list_files": "Listing files:",
+}
+
+
+def _recv_timeout_expected(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return any(
+        token in msg
+        for token in ("timed out", "timeout", "disconnect", "closed", "connection")
+    )
+
+
+def host_log_offset() -> int:
+    """Character offset into the host log (not byte count)."""
+    try:
+        with open(HOST_LOG, encoding="utf-8") as fh:
+            return len(fh.read())
+    except OSError:
+        return 0
+
 
 def _is_gemini_app_page(target: dict) -> bool:
     url = target.get("url", "")
@@ -120,10 +147,13 @@ def reconnect_gemini_page(sess: BrowserSession) -> None:
         raise RuntimeError("No gemini.google.com tab — open Gemini in debug Brave")
     sess.page_target = page
     new_sess = attach_to_target(sess.cdp, page["targetId"])
-    if new_sess:
-        sess.page_sess = new_sess
-        sess.cdp.send("Runtime.enable", session_id=sess.page_sess)
-        sess.cdp.send("Log.enable", session_id=sess.page_sess)
+    if not new_sess:
+        raise RuntimeError(
+            "reconnect_gemini_page: attach_to_target returned None (stale session)"
+        )
+    sess.page_sess = new_sess
+    sess.cdp.send("Runtime.enable", session_id=sess.page_sess)
+    sess.cdp.send("Log.enable", session_id=sess.page_sess)
 
 
 def reload_extension(sess: BrowserSession) -> None:
@@ -136,8 +166,9 @@ def reload_extension(sess: BrowserSession) -> None:
     )
     try:
         sess.cdp.recv(mid, timeout=2.0)
-    except Exception:
-        pass
+    except RuntimeError as exc:
+        if not _recv_timeout_expected(exc):
+            raise
     time.sleep(3)
     sw = None
     for _ in range(20):
@@ -187,8 +218,9 @@ def reload_gemini_tab(sess: BrowserSession) -> None:
     mid = sess.cdp.send("Page.reload", session_id=sess.page_sess)
     try:
         sess.cdp.recv(mid, timeout=20.0)
-    except Exception:
-        pass
+    except RuntimeError as exc:
+        if not _recv_timeout_expected(exc):
+            raise
     time.sleep(2.0)
     reconnect_gemini_page(sess)
     wait_gemini_content_script(sess)
@@ -231,9 +263,13 @@ def host_exec_count(command_substring: str, after_index: int = 0) -> int:
     except FileNotFoundError:
         return 0
     chunk = text[after_index:]
+    action_marker = _ACTION_LOG_MARKERS.get(command_substring)
     n = 0
     for line in chunk.splitlines():
-        if "Executing shell command:" in line and command_substring in line:
+        if action_marker:
+            if action_marker in line:
+                n += 1
+        elif "Executing shell command:" in line and command_substring in line:
             n += 1
     return n
 

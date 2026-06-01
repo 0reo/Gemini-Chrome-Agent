@@ -18,6 +18,7 @@ from ..gemini_ui import (
 from ..harness import (
     connect,
     evaluate,
+    host_log_offset,
     reload_gemini_tab,
     set_agent_active,
 )
@@ -27,13 +28,6 @@ from ..pipeline_assert import (
     assert_turn_complete,
     wait_cooldown,
 )
-
-
-def _host_offset() -> int:
-    try:
-        return os.path.getsize("/tmp/gemini_host.log")
-    except OSError:
-        return 0
 
 
 _GEMINI_JSON_RULE = (
@@ -95,7 +89,7 @@ def run_shell_roundtrip(port: int) -> None:
     try:
         _prepare_gemini_session(sess)
         marker = f"gla_b1_{uuid.uuid4().hex[:8]}"
-        offset = _host_offset()
+        offset = host_log_offset()
         prompt = _prompt_shell(marker)
         from ..gemini_ui import _gemini_said_count, wait_for_gemini_reply
 
@@ -126,7 +120,7 @@ def run_file_roundtrip(port: int) -> None:
     content = f"gla_file_content_{run_id}"
     try:
         _prepare_gemini_session(sess)
-        offset = _host_offset()
+        offset = host_log_offset()
 
         sent1 = send_prompt(sess, _prompt_write(path, content), timeout_s=45.0)
         if not sent1.get("sent"):
@@ -151,7 +145,7 @@ def run_file_roundtrip(port: int) -> None:
         wait_gemini_idle(sess, timeout_s=45.0)
         wait_composer_clear(sess)
 
-        offset2 = _host_offset()
+        offset2 = host_log_offset()
         sent2 = send_prompt(sess, _prompt_read(path), timeout_s=45.0)
         if not sent2.get("sent"):
             raise PipelineFailure("setup", f"read prompt not sent: {sent2}")
@@ -180,7 +174,7 @@ def run_agent_chain(port: int) -> None:
     path = os.path.join(tempfile.gettempdir(), f"gla_chain_{run_id}.txt")
     try:
         _prepare_gemini_session(sess)
-        offset = _host_offset()
+        offset = host_log_offset()
 
         m1 = f"gla_chain_{run_id}"
         sent = send_prompt(
@@ -202,7 +196,7 @@ def run_agent_chain(port: int) -> None:
         wait_composer_clear(sess)
 
         # Turn 2: read file
-        offset2 = _host_offset()
+        offset2 = host_log_offset()
         sent2 = send_prompt(sess, _prompt_read(path), timeout_s=45.0)
         if not sent2.get("sent"):
             raise PipelineFailure("setup", "turn2 send failed")
