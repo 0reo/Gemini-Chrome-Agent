@@ -155,8 +155,19 @@ def run_file_roundtrip(port: int) -> None:
         sent2 = send_prompt(sess, _prompt_read(path), timeout_s=45.0)
         if not sent2.get("sent"):
             raise PipelineFailure("setup", f"read prompt not sent: {sent2}")
-        wait_for_action_codeblock(sess, "read_file", timeout_s=120.0)
-        if not wait_for_thread_marker(sess, content, timeout_s=90.0):
+        blocks2 = wait_for_action_codeblock(sess, "read_file", timeout_s=120.0)
+        if not blocks2:
+            raise PipelineFailure("stage1", "read_file JSON block not emitted")
+        from ..harness import host_exec_count
+
+        deadline = time.time() + 60.0
+        while time.time() < deadline:
+            if host_exec_count("read_file", offset2) >= 1:
+                break
+            time.sleep(1.0)
+        else:
+            raise PipelineFailure("stage4", "read_file not executed by host")
+        if not wait_for_thread_marker(sess, content, timeout_s=30.0):
             raise PipelineFailure("stage5", f"read output missing content {content}")
         print(f"PASS file_roundtrip ({path})")
     finally:
