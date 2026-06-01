@@ -8,6 +8,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 # test/e2e_browser.py
@@ -21,6 +22,20 @@ DEFAULT_PORT = 9222
 HOST_LOG = "/tmp/gemini_host.log"
 SETTLING_WAIT_S = 6
 DEFAULT_COOLDOWN_WAIT_S = 16
+
+_VERBOSE = False
+
+
+def set_verbose(enabled: bool) -> None:
+    global _VERBOSE
+    _VERBOSE = enabled
+
+
+def log_step(msg: str) -> None:
+    if not _VERBOSE:
+        return
+    ts = datetime.now().strftime("%H:%M:%S")
+    print(f"[{ts}] {msg}", flush=True)
 
 _ACTION_LOG_MARKERS: dict[str, str] = {
     "read_file": "Reading file:",
@@ -110,6 +125,7 @@ def close_extra_gemini_tabs(cdp: CDPClient) -> int:
 
 
 def connect(port: int = DEFAULT_PORT) -> BrowserSession:
+    log_step(f"connect: attaching CDP on :{port}")
     ensure_cdp(port)
     cdp = CDPClient(port)
     close_extra_gemini_tabs(cdp)
@@ -122,6 +138,15 @@ def connect(port: int = DEFAULT_PORT) -> BrowserSession:
     if not sw:
         cdp.close()
         raise RuntimeError("Extension service worker not found — load .output/chrome-mv3")
+    if not page:
+        mid = cdp.send("Target.createTarget", {"url": "https://gemini.google.com/app"})
+        try:
+            cdp.recv(mid, timeout=15.0)
+        except RuntimeError as exc:
+            if not _recv_timeout_expected(exc):
+                raise
+        time.sleep(4.0)
+        page = find_target(cdp, _is_gemini_app_page)
     if not page:
         cdp.close()
         raise RuntimeError("No gemini.google.com tab — open or navigate to Gemini")
@@ -137,12 +162,20 @@ def connect(port: int = DEFAULT_PORT) -> BrowserSession:
     cdp.send("Log.enable", session_id=page_sess)
 
     ext_id = sw["url"].split("/")[2]
+    log_step(f"connect: ready (ext={ext_id[:8]}…, page={page.get('url', '')[:60]})")
     return BrowserSession(cdp, port, sw, page, sw_sess, page_sess, ext_id)
 
 
 def reconnect_gemini_page(sess: BrowserSession) -> None:
+    log_step("reconnect_gemini_page: re-attaching to Gemini tab")
     sess.cdp.drain_events(timeout=0.3)
-    page = find_target(sess.cdp, _is_gemini_app_page)
+    deadline = time.time() + 20.0
+    page = None
+    while time.time() < deadline:
+        page = find_target(sess.cdp, _is_gemini_app_page)
+        if page:
+            break
+        time.sleep(0.5)
     if not page:
         raise RuntimeError("No gemini.google.com tab — open Gemini in debug Brave")
     sess.page_target = page
@@ -201,12 +234,14 @@ def _console_text_from_event(evt: dict) -> str:
 
 def wait_gemini_content_script(sess: BrowserSession, timeout_s: float = 30.0) -> None:
     """Wait for [Gemini Agent] content script init log after navigation/reload."""
+    log_step("wait_gemini_content_script: waiting for content script init")
     deadline = time.time() + timeout_s
     while time.time() < deadline:
         for evt in sess.cdp.drain_events(timeout=0.4):
             text = _console_text_from_event(evt)
             if "[Gemini Agent]" in text and "Content script loaded" in text:
                 time.sleep(0.5)
+                log_step("wait_gemini_content_script: content script ready")
                 return
         time.sleep(0.3)
     raise RuntimeError("Gemini content script did not load (no console init log)")
@@ -214,6 +249,7 @@ def wait_gemini_content_script(sess: BrowserSession, timeout_s: float = 30.0) ->
 
 def reload_gemini_tab(sess: BrowserSession) -> None:
     """Full page reload so MV3 content script injects on the active Gemini tab."""
+    log_step("reload_gemini_tab: starting page reload")
     sess.cdp.drain_events(timeout=0.2)
     mid = sess.cdp.send("Page.reload", session_id=sess.page_sess)
     try:
@@ -225,6 +261,7 @@ def reload_gemini_tab(sess: BrowserSession) -> None:
     reconnect_gemini_page(sess)
     wait_gemini_content_script(sess)
     time.sleep(SETTLING_WAIT_S)
+    log_step("reload_gemini_tab: complete")
 
 
 def read_storage(sess: BrowserSession) -> dict:
@@ -325,7 +362,14 @@ def inject_synthetic_block(sess: BrowserSession, payload_json: str) -> None:
 
 
 def page_eval(sess: BrowserSession, expression: str, await_promise: bool = False) -> dict:
-    raw = evaluate(sess.cdp, sess.page_sess, expression, await_promise=await_promise)
+    try:
+        raw = evaluate(sess.cdp, sess.page_sess, expression, await_promise=await_promise)
+    except RuntimeError as exc:
+        if "CDP evaluate timed out" not in str(exc):
+            raise
+        log_step("page_eval: CDP timeout — reconnecting Gemini page and retrying once")
+        reconnect_gemini_page(sess)
+        raw = evaluate(sess.cdp, sess.page_sess, expression, await_promise=await_promise)
     if isinstance(raw, dict) and "value" in raw:
         return {"value": raw["value"]}
     return {"value": raw}

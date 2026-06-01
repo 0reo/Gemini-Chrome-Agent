@@ -19,12 +19,14 @@ from ..harness import (
     connect,
     evaluate,
     host_log_offset,
+    log_step,
     reload_gemini_tab,
     set_agent_active,
 )
 from ..pipeline_assert import (
     PipelineFailure,
     TurnContext,
+    assert_not_paused,
     assert_turn_complete,
     wait_cooldown,
 )
@@ -60,9 +62,12 @@ def _prompt_read(path: str) -> str:
 def _prepare_gemini_session(sess) -> None:
     # Do not reload the extension here — it kills the SW CDP session mid-flight.
     # Reload the Gemini tab so the content script is definitely injected on this target.
+    log_step("prepare: reload_gemini_tab")
     reload_gemini_tab(sess)
+    log_step("prepare: set_agent_active")
     set_agent_active(sess)
     # Faster turns for E2E (does not change committed CONFIG defaults)
+    log_step("prepare: relax storage throttles for E2E")
     evaluate(
         sess.cdp,
         sess.sw_sess,
@@ -71,20 +76,33 @@ def _prepare_gemini_session(sess) -> None:
     )
     from ..gemini_ui import wait_composer_clear, wait_composer_ready, wait_gemini_idle
 
+    log_step("prepare: click_new_chat")
     click_new_chat(sess)
-    if not wait_gemini_idle(sess):
-        raise PipelineFailure("setup", "Gemini still generating before session start")
-    if not wait_composer_clear(sess):
+    log_step("prepare: wait_gemini_idle")
+    if not wait_gemini_idle(sess, timeout_s=120.0):
+        click_new_chat(sess)
+        time.sleep(3)
+        if not wait_gemini_idle(sess, timeout_s=120.0):
+            reload_gemini_tab(sess)
+            click_new_chat(sess)
+            time.sleep(3)
+            if not wait_gemini_idle(sess, timeout_s=120.0):
+                raise PipelineFailure("setup", "Gemini still generating before session start")
+    log_step("prepare: wait_composer_clear")
+    if not wait_composer_clear(sess, timeout_s=60.0):
         raise PipelineFailure("setup", "composer not clear before session start")
     if not wait_composer_ready(sess, timeout_s=30.0):
         raise PipelineFailure("setup", "Gemini composer not ready after new chat")
     time.sleep(2)
+    log_step("prepare: ensure_fast_model")
     model = ensure_fast_model(sess)
     if not model.get("ok"):
         raise PipelineFailure(
             "setup",
             f"select Flash or Thinking (not Pro) in Gemini UI: {model}",
         )
+
+    log_step("prepare: session ready")
 
 
 def run_shell_roundtrip(port: int) -> None:
@@ -97,12 +115,14 @@ def run_shell_roundtrip(port: int) -> None:
         from ..gemini_ui import _gemini_said_count, wait_for_gemini_reply
 
         baseline = _gemini_said_count(sess)
+        log_step(f"shell_roundtrip: turn1 send (marker={marker})")
         sent = send_prompt(sess, prompt, timeout_s=45.0)
         if not sent.get("sent"):
             raise PipelineFailure("setup", f"could not send prompt: {sent}")
 
         if not wait_for_gemini_reply(sess, timeout_s=120.0, baseline_said=baseline):
             raise PipelineFailure("stage1", "Gemini did not start a reply")
+        log_step("shell_roundtrip: waiting for action JSON")
         blocks = wait_for_action_codeblock(sess, marker, timeout_s=300.0)
         if not blocks:
             raise PipelineFailure(
@@ -110,6 +130,7 @@ def run_shell_roundtrip(port: int) -> None:
                 f"Gemini did not emit action JSON with marker {marker}",
             )
         ctx = TurnContext(marker=marker, host_log_offset=offset)
+        log_step("shell_roundtrip: assert_turn_complete")
         assert_turn_complete(sess, ctx)
         print(f"PASS shell_roundtrip ({marker})")
     finally:
@@ -125,6 +146,7 @@ def run_file_roundtrip(port: int) -> None:
         _prepare_gemini_session(sess)
         offset = host_log_offset()
 
+        log_step(f"file_roundtrip: turn1 write ({path})")
         sent1 = send_prompt(sess, _prompt_write(path, content), timeout_s=45.0)
         if not sent1.get("sent"):
             raise PipelineFailure("setup", f"write prompt not sent: {sent1}")
@@ -142,19 +164,22 @@ def run_file_roundtrip(port: int) -> None:
             raise PipelineFailure("stage4", "write_file not seen in host log")
         if not wait_for_thread_marker(sess, "System Result", timeout_s=60.0):
             raise PipelineFailure("stage5", "write_file System Result missing")
-        wait_cooldown(TurnContext(marker=run_id, host_log_offset=offset))
+        log_step("file_roundtrip: turn1 complete, cooldown before read")
+        wait_cooldown(TurnContext(marker=run_id, host_log_offset=offset, cooldown_wait_s=6.0))
         from ..gemini_ui import wait_composer_clear, wait_gemini_idle
 
-        if not wait_gemini_idle(sess, timeout_s=45.0):
+        time.sleep(2)
+        if not wait_gemini_idle(sess, timeout_s=120.0):
             raise PipelineFailure("setup", "Gemini still generating before read send")
-        if not wait_composer_clear(sess):
+        if not wait_composer_clear(sess, timeout_s=90.0):
             raise PipelineFailure("setup", "composer not clear before read send")
 
         offset2 = host_log_offset()
+        log_step("file_roundtrip: turn2 read")
         sent2 = send_prompt(sess, _prompt_read(path), timeout_s=45.0)
         if not sent2.get("sent"):
             raise PipelineFailure("setup", f"read prompt not sent: {sent2}")
-        blocks2 = wait_for_action_codeblock(sess, "read_file", timeout_s=120.0)
+        blocks2 = wait_for_action_codeblock(sess, "read_file", timeout_s=180.0)
         if not blocks2:
             raise PipelineFailure("stage1", "read_file JSON block not emitted")
         from ..harness import host_exec_count
@@ -182,6 +207,15 @@ def run_agent_chain(port: int) -> None:
         offset = host_log_offset()
 
         m1 = f"gla_chain_{run_id}"
+        from ..gemini_ui import (
+            _gemini_said_count,
+            wait_composer_clear,
+            wait_for_gemini_reply,
+            wait_gemini_idle,
+        )
+
+        baseline = _gemini_said_count(sess)
+        log_step(f"agent_chain: turn1 shell (marker={m1})")
         sent = send_prompt(
             sess,
             f'Reply with ONLY a json code block: {{"action":"run_shell","command":"uname -a | head -1 > {path} && echo {m1}"}}',
@@ -189,25 +223,31 @@ def run_agent_chain(port: int) -> None:
         )
         if not sent.get("sent"):
             raise PipelineFailure("setup", "turn1 send failed")
+        if not wait_for_gemini_reply(sess, timeout_s=120.0, baseline_said=baseline):
+            raise PipelineFailure("stage1", "Gemini did not start turn1 reply")
         blocks = wait_for_action_codeblock(sess, m1, timeout_s=180.0)
         if not blocks:
             raise PipelineFailure("stage1", f"turn1 JSON missing marker {m1}")
-        ctx1 = TurnContext(marker=m1, host_log_offset=offset)
+        ctx1 = TurnContext(marker=m1, host_log_offset=offset, cooldown_wait_s=4.0)
+        log_step("agent_chain: turn1 assert_turn_complete")
         assert_turn_complete(sess, ctx1)
+        if not wait_for_thread_marker(sess, "System Result", timeout_s=30.0):
+            raise PipelineFailure("stage5", "turn1 System Result missing")
         wait_cooldown(ctx1)
-        from ..gemini_ui import wait_composer_clear, wait_gemini_idle
-
-        if not wait_gemini_idle(sess, timeout_s=45.0):
+        if not wait_gemini_idle(sess, timeout_s=60.0):
             raise PipelineFailure("setup", "Gemini still generating before turn2 send")
-        if not wait_composer_clear(sess):
+        if not wait_composer_clear(sess, timeout_s=30.0):
             raise PipelineFailure("setup", "composer not clear before turn2 send")
 
+        set_agent_active(sess)
+        assert_not_paused(sess)
         # Turn 2: read file
         offset2 = host_log_offset()
+        log_step("agent_chain: turn2 read")
         sent2 = send_prompt(sess, _prompt_read(path), timeout_s=45.0)
         if not sent2.get("sent"):
             raise PipelineFailure("setup", "turn2 send failed")
-        blocks2 = wait_for_action_codeblock(sess, "read_file", timeout_s=120.0)
+        blocks2 = wait_for_action_codeblock(sess, "read_file", timeout_s=180.0)
         if not blocks2:
             raise PipelineFailure("stage1", "turn2 read_file JSON missing")
         from ..harness import host_exec_count
@@ -219,7 +259,27 @@ def run_agent_chain(port: int) -> None:
             time.sleep(1.0)
         else:
             raise PipelineFailure("stage4", "turn2 read_file not executed")
-        if not wait_for_thread_marker(sess, "Linux", timeout_s=60.0):
+        set_agent_active(sess)
+        assert_not_paused(sess)
+        try:
+            with open(path) as f:
+                expected = f.read().strip()
+        except OSError as exc:
+            raise PipelineFailure("stage5", f"chain file missing after read gate: {exc}") from exc
+        if "linux" not in expected.lower():
+            raise PipelineFailure(
+                "stage5",
+                f"chain file missing uname output: {expected[:80]!r}",
+            )
+        needle = "GNU/Linux"
+        deadline = time.time() + 120.0
+        while time.time() < deadline:
+            if wait_for_thread_marker(sess, needle, timeout_s=3.0, poll_s=1.0):
+                break
+            wait_composer_clear(sess, timeout_s=8.0)
+            assert_not_paused(sess)
+            time.sleep(1.0)
+        else:
             raise PipelineFailure("stage5", "read turn did not return uname output")
         print(f"PASS agent_chain ({run_id})")
     finally:

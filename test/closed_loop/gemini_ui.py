@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import time
 
-from .harness import BrowserSession, page_eval
+from .harness import BrowserSession, log_step, page_eval
 
 # Keep in sync with ACTION_BLOCK_SELECTOR in entrypoints/content.ts
 ACTION_BLOCK_SELECTOR_JS = "'pre code, code, pre code.language-json, pre code.hljs'"
@@ -133,10 +133,18 @@ def wait_gemini_idle(sess: BrowserSession, timeout_s: float = 30.0) -> bool:
         r = page_eval(
             sess,
             """(() => {
-              const busy = document.querySelector(
+              const responses = [...document.querySelectorAll('model-response')];
+              const latest = responses.length ? responses[responses.length - 1] : null;
+              const streaming = latest && latest.querySelector(
+                '.processing-state-visible, mat-spinner, .thinking, [aria-busy="true"], .loading-response');
+              const globalBusy = document.querySelector(
                 'mat-spinner, [aria-busy="true"], .loading-response, .thinking');
-              const send = document.querySelector('button[aria-label="Send message"]');
-              return { busy: !!busy, sendPe: send ? getComputedStyle(send).pointerEvents : 'none' };
+              const send = document.querySelector('button[aria-label="Send message"]')
+                || document.querySelector('button.send');
+              return {
+                busy: !!(streaming || globalBusy),
+                sendPe: send ? getComputedStyle(send).pointerEvents : 'none',
+              };
             })()""",
         )
         v = r.get("value") or {}
@@ -152,23 +160,44 @@ def _clear_composer_js() -> str:
       const el = document.querySelector('.ql-editor.textarea') || document.querySelector('.ql-editor');
       if (!el) return { ok: false, reason: 'no_composer' };
       el.focus();
-      const before = (el.innerText || el.textContent || '').trim().length;
-      if (before > 0) {
+      for (let i = 0; i < 3; i++) {
+        const len = (el.innerText || el.textContent || '').trim().length;
+        if (len === 0 || el.classList.contains('ql-blank')) break;
         document.execCommand('selectAll', false, undefined);
         document.execCommand('delete', false, undefined);
       }
       const after = (el.innerText || el.textContent || '').trim().length;
       return {
         ok: true,
-        cleared: before > 0,
         len: after,
         qlBlank: el.classList.contains('ql-blank'),
       };
     })()"""
 
 
+def _try_flush_composer_send(sess: BrowserSession) -> None:
+    """If a prior System Result left text armed in Quill, submit it so turn 2 can type."""
+    page_eval(
+        sess,
+        """(() => {
+          const findBtn = () => document.querySelector('button.send')
+            || document.querySelector('button[aria-label="Send message"]')
+            || [...document.querySelectorAll('button')].find(b =>
+              (b.className||'').toString().split(/\\s+/).includes('send'));
+          const btn = findBtn();
+          const el = document.querySelector('.ql-editor.textarea') || document.querySelector('.ql-editor');
+          if (btn && el && getComputedStyle(btn).pointerEvents !== 'none') {
+            btn.click();
+          }
+        })()""",
+    )
+    time.sleep(2.0)
+
+
 def wait_composer_clear(sess: BrowserSession, timeout_s: float = 15.0) -> bool:
+    log_step("wait_composer_clear: waiting for blank composer")
     deadline = time.time() + timeout_s
+    flushed = False
     while time.time() < deadline:
         page_eval(sess, _clear_composer_js())
         r = page_eval(
@@ -181,7 +210,11 @@ def wait_composer_clear(sess: BrowserSession, timeout_s: float = 15.0) -> bool:
             })()""",
         )
         if r.get("value"):
+            log_step("wait_composer_clear: composer blank")
             return True
+        if not flushed:
+            _try_flush_composer_send(sess)
+            flushed = True
         time.sleep(0.5)
     return False
 
@@ -194,12 +227,15 @@ def send_prompt(
 ) -> dict:
     """Insert prompt into Quill and click Send when armed."""
     del thread_needle  # reserved for callers; thread verified via wait_for_* helpers
+    preview = text[:60].replace("\n", " ")
+    log_step(f"send_prompt: start ({preview!r}…)")
     if not wait_composer_ready(sess):
         return {"ok": False, "reason": "composer_not_ready"}
     wait_gemini_idle(sess)
     if not wait_composer_clear(sess):
         return {"ok": False, "reason": "composer_not_clear"}
     payload = json.dumps(text)
+    snippet = json.dumps(text[:80])
     insert_js = f"""(() => {{
       const el = document.querySelector('.ql-editor.textarea') || document.querySelector('.ql-editor');
       if (!el) return {{ ok: false, reason: 'no_composer' }};
@@ -217,7 +253,26 @@ def send_prompt(
       }};
     }})()"""
     click_js = """(() => {
-      const findBtn = () => document.querySelector('button[aria-label="Send message"]');
+      const findBtn = () => {
+        const sels = [
+          'button[aria-label="Send message"]',
+          'button[aria-label*="Send"]',
+          'button[mattooltip*="Send"]',
+          'button[data-testid="send-button"]',
+          'button.send-button',
+          'button.send',
+          'button[class*=" send"]',
+        ];
+        for (const s of sels) {
+          const b = document.querySelector(s);
+          if (b) return b;
+        }
+        return [...document.querySelectorAll('button')].find(b => {
+          const label = ((b.getAttribute('aria-label') || '') + ' ' + (b.textContent || '')).toLowerCase();
+          if (label.includes('send')) return true;
+          return (b.className || '').toString().split(/\\s+/).includes('send');
+        }) || null;
+      };
       const ready = (btn) => btn && getComputedStyle(btn).pointerEvents !== 'none';
       const el = document.querySelector('.ql-editor.textarea') || document.querySelector('.ql-editor');
       if (!el) return { ok: false, reason: 'no_composer' };
@@ -237,6 +292,39 @@ def send_prompt(
       };
     })()"""
 
+    submit_enter_js = f"""(() => {{
+      const el = document.querySelector('.ql-editor.textarea') || document.querySelector('.ql-editor');
+      if (!el) return {{ ok: false, reason: 'no_composer' }};
+      const beforeLen = (el.innerText || el.textContent || '').trim().length;
+      if (beforeLen === 0) return {{ ok: false, reason: 'composer_empty' }};
+      el.focus();
+      el.dispatchEvent(new KeyboardEvent('keydown', {{
+        key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true,
+      }}));
+      el.dispatchEvent(new KeyboardEvent('keypress', {{
+        key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true,
+      }}));
+      el.dispatchEvent(new KeyboardEvent('keyup', {{
+        key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true,
+      }}));
+      const afterLen = (el.innerText || el.textContent || '').trim().length;
+      const inThread = document.body.innerText.includes({snippet});
+      return {{
+        ok: true,
+        sent: afterLen < beforeLen || inThread,
+        via: 'enter',
+        beforeLen,
+        afterLen,
+        inThread,
+      }};
+    }})()"""
+
+    sent_check_js = f"""(() => {{
+      const el = document.querySelector('.ql-editor.textarea') || document.querySelector('.ql-editor');
+      const blank = el ? (el.classList.contains('ql-blank') || (el.innerText||'').trim().length === 0) : false;
+      return {{ inThread: document.body.innerText.includes({snippet}), composerBlank: blank }};
+    }})()"""
+
     for attempt in range(2):
         if attempt > 0:
             wait_composer_clear(sess)
@@ -244,13 +332,32 @@ def send_prompt(
         inserted = page_eval(sess, insert_js).get("value") or {}
         if not inserted.get("ok"):
             return inserted if inserted else {"ok": False, "reason": "insert_failed"}
+        log_step(f"send_prompt: inserted ({inserted.get('composerLen', '?')} chars)")
         deadline = time.time() + timeout_s
         val: dict = {"ok": False, "sent": False, "reason": "send_not_armed"}
+        tried_enter = False
+        logged_wait = False
         while time.time() < deadline:
             val = page_eval(sess, click_js).get("value") or val
             if val.get("sent"):
+                log_step("send_prompt: sent via click")
                 time.sleep(3)
                 return val
+            if not logged_wait:
+                log_step("send_prompt: waiting for send armed")
+                logged_wait = True
+            check = page_eval(sess, sent_check_js).get("value") or {}
+            if check.get("inThread") or check.get("composerBlank"):
+                log_step("send_prompt: sent via thread_or_blank")
+                time.sleep(3)
+                return {"ok": True, "sent": True, "via": "thread_or_blank"}
+            if not tried_enter and time.time() > deadline - timeout_s * 0.6:
+                enter_val = page_eval(sess, submit_enter_js).get("value") or {}
+                tried_enter = True
+                if enter_val.get("sent"):
+                    log_step("send_prompt: sent via enter")
+                    time.sleep(3)
+                    return enter_val
             time.sleep(0.15)
         if attempt == 0:
             continue
@@ -262,14 +369,29 @@ def click_new_chat(sess: BrowserSession) -> bool:
     r = page_eval(
         sess,
         """(() => {
-          const byAria = document.querySelector(
-            'button[aria-label="New chat"], a[aria-label="New chat"], button[aria-label="New Chat"]');
-          if (byAria) { byAria.click(); return { ok: true, via: 'aria' }; }
-          const el = [...document.querySelectorAll('a,button')].find(e =>
+          const clickEl = (el) => { try { el.click(); return true; } catch { return false; } };
+          const sidebar = document.querySelector('button[aria-label="Open sidebar"]');
+          if (sidebar && getComputedStyle(sidebar).pointerEvents !== 'none') clickEl(sidebar);
+          const selectors = [
+            'button[aria-label="New chat"]',
+            'a[aria-label="New chat"]',
+            'button[aria-label="New Chat"]',
+            'a[aria-label="New Chat"]',
+            'button[aria-label*="New chat"]',
+          ];
+          for (const s of selectors) {
+            const el = document.querySelector(s);
+            if (el && clickEl(el)) return { ok: true, via: 'aria', sel: s };
+          }
+          const el = [...document.querySelectorAll('a,button,[role="button"]')].find(e =>
             /new chat/i.test((e.textContent||'') + (e.getAttribute('aria-label')||'')));
-          if (el) { el.click(); return { ok: true, via: 'text' }; }
-          location.href = 'https://gemini.google.com/app';
-          return { ok: true, via: 'navigate' };
+          if (el && clickEl(el)) return { ok: true, via: 'text' };
+          const cur = location.pathname || '';
+          if (!cur.endsWith('/app') || cur.split('/').length > 2) {
+            location.href = 'https://gemini.google.com/app';
+            return { ok: true, via: 'navigate' };
+          }
+          return { ok: false, reason: 'new_chat_control_not_found' };
         })()""",
     )
     val = r.get("value") or {}
@@ -353,12 +475,60 @@ def wait_for_gemini_reply(
     """Wait until a new model turn appears (Gemini said count increases)."""
     if baseline_said is None:
         baseline_said = _gemini_said_count(sess)
+    log_step(f"wait_for_gemini_reply: waiting (baseline={baseline_said})")
     deadline = time.time() + timeout_s
     while time.time() < deadline:
         if _gemini_said_count(sess) > baseline_said:
+            log_step("wait_for_gemini_reply: new reply detected")
             return True
         time.sleep(2.0)
     return False
+
+
+def _action_json_probe_js(must_contain: str) -> str:
+    """JS that finds action JSON blocks (matches content.ts selector + tolerant parse)."""
+    needle = json.dumps(must_contain)
+    selector = ACTION_BLOCK_SELECTOR_JS
+    return f"""(() => {{
+      const needle = {needle};
+      const parseAction = (raw) => {{
+        const t = (raw || '').trim();
+        if (!t.includes('"action"') || !t.includes(needle)) return false;
+        const attempts = [t, t.replace(/^JSON\\s*/i, '').trim()];
+        const brace = t.match(/\\{{[\\s\\S]*\\}}/);
+        if (brace) attempts.push(brace[0]);
+        for (const s of attempts) {{
+          try {{
+            const o = JSON.parse(s);
+            if (o && typeof o.action === 'string') return true;
+          }} catch {{}}
+        }}
+        return false;
+      }};
+      const seen = new Set();
+      const out = [];
+      for (const b of document.querySelectorAll({selector})) {{
+        if (seen.has(b)) continue;
+        seen.add(b);
+        if (!parseAction(b.textContent)) continue;
+        out.push({{
+          tag: b.tagName,
+          parent: b.parentElement?.tagName,
+          snippet: (b.textContent||'').slice(0, 150),
+        }});
+      }}
+      for (const pre of document.querySelectorAll('pre')) {{
+        if (seen.has(pre)) continue;
+        seen.add(pre);
+        if (!parseAction(pre.textContent)) continue;
+        out.push({{
+          tag: pre.tagName,
+          parent: pre.parentElement?.tagName,
+          snippet: (pre.textContent||'').slice(0, 150),
+        }});
+      }}
+      return out;
+    }})()"""
 
 
 def wait_for_action_codeblock(
@@ -368,30 +538,14 @@ def wait_for_action_codeblock(
     poll_s: float = 3.0,
 ) -> list[dict]:
     """Wait until a model code block with valid action JSON appears (stage 1)."""
+    probe = _action_json_probe_js(must_contain)
+    log_step(f"wait_for_action_codeblock: waiting for action JSON ({must_contain!r})")
     deadline = time.time() + timeout_s
     while time.time() < deadline:
-        r = page_eval(
-            sess,
-            f"""(() => {{
-              const needle = {json.dumps(must_contain)};
-              return [...document.querySelectorAll('pre code, code')]
-                .filter(b => {{
-                  const t = b.textContent || '';
-                  if (!t.includes('"action"') || !t.includes(needle)) return false;
-                  try {{
-                    JSON.parse(t.trim());
-                    return true;
-                  }} catch {{ return false; }}
-                }})
-                .map(b => ({{
-                  tag: b.tagName,
-                  parent: b.parentElement?.tagName,
-                  snippet: (b.textContent||'').slice(0, 150),
-                }}));
-            }})()""",
-        )
+        r = page_eval(sess, probe)
         val = r.get("value") or []
         if val:
+            log_step(f"wait_for_action_codeblock: found {len(val)} block(s)")
             return val
         time.sleep(poll_s)
     return []

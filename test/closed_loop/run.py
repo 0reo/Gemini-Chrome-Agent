@@ -18,7 +18,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from test.closed_loop.harness import DEFAULT_PORT, cdp_is_up
+from test.closed_loop.harness import DEFAULT_PORT, cdp_is_up, set_verbose
 from test.closed_loop.pipeline_assert import PipelineFailure
 from test.closed_loop.scenarios.tier_a import TIER_A
 from test.closed_loop.scenarios.tier_b import TIER_B
@@ -45,6 +45,12 @@ def main() -> int:
     parser.add_argument("--tier", choices=["A", "B", "C", "all"], default=None)
     parser.add_argument("--scenario", choices=sorted(ALL.keys()), default=None)
     parser.add_argument("--list", action="store_true")
+    parser.add_argument(
+        "--verbose",
+        "-v",
+        action="store_true",
+        help="Print timestamped progress steps to stdout",
+    )
     args = parser.parse_args()
 
     if args.list:
@@ -66,6 +72,8 @@ def main() -> int:
         scenarios = TIER_MAP[args.tier]
     else:
         scenarios = TIER_MAP["A"]
+
+    set_verbose(args.verbose)
 
     failed = 0
     for name in scenarios:
