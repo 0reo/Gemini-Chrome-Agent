@@ -11,6 +11,8 @@ from .harness import BrowserSession, log_step, page_eval
 # Keep in sync with ACTION_BLOCK_SELECTOR in entrypoints/content.ts
 ACTION_BLOCK_SELECTOR_JS = "'pre code, code, pre code.language-json, pre code.hljs'"
 
+_WARNED_NO_GEM = False
+
 
 def _fresh_chat_url() -> str:
     """Where ensure_fresh_chat lands a new thread.
@@ -29,6 +31,14 @@ def _fresh_chat_url() -> str:
     gem_id = os.environ.get("GLA_GEM_ID", "").strip()
     if gem_id:
         return f"https://gemini.google.com/gem/{gem_id}"
+    global _WARNED_NO_GEM
+    if not _WARNED_NO_GEM:
+        _WARNED_NO_GEM = True
+        log_step(
+            "WARNING: GLA_GEM_ID/GLA_GEM_URL unset → using bare /app. run_shell "
+            "scenarios (e.g. agent_chain) will hit Gemini's safety refusal "
+            "(action:error) — a false negative, not a pipeline bug. Set GLA_GEM_ID."
+        )
     return "https://gemini.google.com/app"
 
 
