@@ -93,7 +93,32 @@ Popup **Rerun last action** sends `{ type: 'RERUN_LATEST' }` to the content scri
 `window.postMessage({ __gla: 'rerun-latest' }, '*')`. Only the **last** valid action block in document
 order is dispatched; older blocks in the thread are never auto-run.
 
+## Reloading & observing the live extension (hard-won)
+
+- **Rebuild ≠ reload. Brave caches the unpacked content script.** `npm run build` updates
+  `.output/chrome-mv3/content-scripts/content.js`, but a running debug Brave keeps the OLD content
+  script — `chrome.runtime.reload()` and hard page reloads (Page.reload / navigate / `location.href`) do
+  **not** reliably pick up new content-script code. To load a content-script change you must **relaunch**:
+  `pkill -f "user-data-dir=.*gla-debug-profile"`, wait for `:9222` to free, then
+  `./scripts/launch-debug-brave.sh`. **Always prove the new build is live** (unique marker log, below)
+  before trusting any "the fix didn't work" result.
+- **Content-script logs are ISOLATED-world; the MCP only sees MAIN-world.** `brave-debug` MCP
+  `evaluate_script`/`list_console_messages` run in / read the page MAIN world (hence they can touch
+  `__quill`). To read the content script's `[Gemini Agent]` logs, capture via the harness CDP:
+  `for evt in sess.cdp.drain_events(...): _console_text_from_event(evt)` on the page session. Add a
+  temporary `info('[marker] …')` to triggerSend/handlers to confirm which build is running.
+- **SW-context settings:** `autoSubmit`/cooldown/paused live in `chrome.storage.local`, readable only in
+  the service worker — use `harness.read_storage(sess)` (evaluates in `sess.sw_sess`). `autoSubmit` unset
+  ⇒ ON (`autoSubmit !== false`).
+
 ## False greens
 
 Post-load synthetic `<pre><code>` injection does **not** prove load-time JSON on screen at refresh.
 Use `load_historical_skip` and real Gemini turns for that.
+
+**Stage-5 "System Result in `body.innerText`" passes on a STUCK composer.** The composer's text is part of
+`document.body.innerText`, so an injected-but-**unsent** System Result satisfies a `body.innerText`
+check — it cannot tell "auto-submitted into the thread" from "left armed in the composer." This is why
+Tier B never caught the auto-submit stall (#18); the harness also sends each turn itself. Verify real
+auto-submit only via a hands-off **autonomous chain** (seed once, all System Results self-submit), and
+check the result became its **own turn** (a new `<user-query>`/`<model-response>`), not just present text.
