@@ -239,25 +239,35 @@ def send_prompt(
       const el = document.querySelector('.ql-editor.textarea') || document.querySelector('.ql-editor');
       if (!el) return {{ ok: false, reason: 'no_composer' }};
       el.focus();
-      // focus() alone does not place a caret inside a freshly-blank Quill editor, so
-      // execCommand('insertText') no-ops on the 2nd+ turn (0-char insert). Put a collapsed
-      // selection inside the editor first.
-      try {{
-        const sel = window.getSelection();
-        const range = document.createRange();
-        range.selectNodeContents(el);
-        range.collapse(false);
-        sel.removeAllRanges();
-        sel.addRange(range);
-      }} catch (e) {{}}
-      const existing = (el.innerText || el.textContent || '').trim();
-      if (existing.length > 0) {{
-        document.execCommand('selectAll', false, undefined);
-        document.execCommand('delete', false, undefined);
+      // Gemini's new-input-ui composer arms/submits off Quill's MODEL, and execCommand no longer
+      // updates the model (DOM/model desync — #16). Set the model via the Quill API so Send arms.
+      let q = null, node = el;
+      for (let i = 0; i < 6 && node; i++) {{ if (node.__quill) {{ q = node.__quill; break; }} node = node.parentElement; }}
+      if (q && q.setText) {{
+        // 'user' source is REQUIRED: it makes Quill emit text-change as user input, which is
+        // what arms Gemini's Send button on new-input-ui. Default 'api' syncs the model but
+        // leaves Send disabled (#16).
+        q.setText({payload}, 'user');
+        try {{ q.setSelection(q.getLength(), 0); }} catch (e) {{}}
+      }} else {{
+        // fallback (old UI / no quill instance): place a caret, then execCommand
+        try {{
+          const sel = window.getSelection();
+          const range = document.createRange();
+          range.selectNodeContents(el);
+          range.collapse(false);
+          sel.removeAllRanges();
+          sel.addRange(range);
+        }} catch (e) {{}}
+        if ((el.innerText || el.textContent || '').trim().length > 0) {{
+          document.execCommand('selectAll', false, undefined);
+          document.execCommand('delete', false, undefined);
+        }}
+        document.execCommand('insertText', false, {payload});
       }}
-      document.execCommand('insertText', false, {payload});
       return {{
         ok: true,
+        via: q ? 'quill' : 'execCommand',
         composerLen: (el.innerText || el.textContent || '').trim().length,
         qlBlank: el.classList.contains('ql-blank'),
       }};
