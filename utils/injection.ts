@@ -26,79 +26,34 @@ function getElementText(el: HTMLElement): string {
   return el.innerText || el.textContent || '';
 }
 
-/** Inject raw text into Gemini's composer (Quill). Returns true on success. */
+/** Inject raw text into Gemini's composer (Quill). Returns true if handed to the page composer. */
 export function injectText(fullText: string): boolean {
-  const strategies = [
-    () => injectIntoContentEditable(document.querySelector('rich-textarea [contenteditable="true"]'), fullText),
-    () => injectIntoContentEditable(document.querySelector('[role="textbox"][contenteditable="true"]'), fullText),
-    () => injectIntoContentEditable(document.querySelector('.ql-editor'), fullText),
-    () => injectIntoTextarea(document.querySelector('textarea'), fullText),
-  ];
-
-  for (const strategy of strategies) {
-    try {
-      const result = strategy();
-      if (result === 'injected') {
-        info('Text injected successfully');
-        return true;
-      }
-      if (result === 'skipped_user_typing') {
-        warn('Injection skipped: user is actively typing in the input');
-        return false;
-      }
-    } catch (e) {
-      warn('Injection strategy failed', { error: (e as Error).message });
-    }
+  const editor = (document.querySelector('.ql-editor.textarea')
+    || document.querySelector('.ql-editor')
+    || document.querySelector('[role="textbox"][contenteditable="true"]')
+    || document.querySelector('rich-textarea [contenteditable="true"]')
+    || document.querySelector('textarea')) as HTMLElement | null;
+  if (!editor) {
+    error('Could not find any injectable input element');
+    return false;
   }
-  error('Could not find any injectable input element');
-  return false;
+  // CRITICAL: do not overwrite what the user is actively typing.
+  if (isUserActivelyTyping(editor)) {
+    warn('Injection skipped: user is actively typing in the input');
+    return false;
+  }
+  // Gemini's new-input-ui composer arms/submits off Quill's MODEL, and execCommand no longer
+  // updates the model from this isolated content-script world (DOM/model desync — issue #16).
+  // Hand the text to the MAIN-world bridge (entrypoints/uploader.content.ts), which can call
+  // Quill's API directly. triggerSend() then clicks once the synced model arms the button.
+  window.postMessage({ __gla: 'quill-set', text: fullText }, '*');
+  info('Text dispatched to page composer (Quill MAIN-world bridge)');
+  return true;
 }
 
 export function injectResponse(data: { output?: string; error?: string; message?: string }): boolean {
   const outputText = data?.output || data?.error || data?.message || 'Command completed.';
   return injectText(`System Result:\n${outputText}`);
-}
-
-type InjectionResult = 'injected' | 'skipped_user_typing' | false;
-
-function injectIntoContentEditable(element: Element | null, text: string): InjectionResult {
-  if (!element) return false;
-  const el = element as HTMLElement;
-
-  // CRITICAL: Do not overwrite what the user is currently typing
-  if (isUserActivelyTyping(el)) {
-    return 'skipped_user_typing';
-  }
-
-  // Gemini's input is a Quill editor. Quill keeps its own document model and
-  // syncs it from the DOM via a MutationObserver, so directly mutating the DOM
-  // (range.insertNode, setting innerText) leaves Quill's model empty — the text
-  // shows on screen but the Send button never arms. execCommand routes through
-  // the browser's native editing pipeline, firing the beforeinput/input events
-  // Quill listens to, which updates its model. selectAll+delete first so any
-  // leftover content is replaced cleanly (a bare selectAll+insertText corrupts
-  // the first character against Quill).
-  el.focus();
-  document.execCommand('selectAll', false, undefined);
-  document.execCommand('delete', false, undefined);
-  document.execCommand('insertText', false, text);
-
-  return 'injected';
-}
-
-function injectIntoTextarea(element: Element | null, text: string): InjectionResult {
-  if (!element) return false;
-  const el = element as HTMLTextAreaElement;
-
-  // CRITICAL: Do not overwrite what the user is currently typing
-  if (isUserActivelyTyping(el)) {
-    return 'skipped_user_typing';
-  }
-
-  el.focus();
-  el.value = text;
-  el.dispatchEvent(new Event('input', { bubbles: true }));
-  return 'injected';
 }
 
 /**

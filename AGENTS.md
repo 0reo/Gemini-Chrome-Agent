@@ -65,7 +65,7 @@ The system has three layers:
 
 1. **Frontend (`content.ts`)** — Injected into `gemini.google.com`. Uses a `MutationObserver` to scan the DOM for `<pre><code>` blocks containing JSON payloads with an `"action"` key. Validates, deduplicates, and forwards payloads to the background script. Receives responses and injects them into the Gemini input box, then auto-clicks the Send button. A second MAIN-world content script (`entrypoints/uploader.content.ts`) handles `attach_files` by injecting `File` objects into Gemini's uploader (see **Gemini DOM facts**).
 
-> **Gemini DOM facts (verified live; the un-unit-testable layer).** The composer is a **Quill editor (Angular Material), not React.** Inject text via `document.execCommand('insertText')` — raw DOM mutation (`innerText`/`insertNode`) leaves Quill's own model empty so the Send button never arms. The Send button is gated by **`pointer-events: none`**, NOT the `disabled` property (which stays `false`); test readiness via computed `pointer-events`. File upload works by hooking `HTMLInputElement.prototype.click` from the MAIN world and feeding a `DataTransfer`; synthetic paste and drag-drop do **not** work. All of this lives in `utils/injection.ts` and `entrypoints/uploader.content.ts`, and must be re-verified against live Gemini (not unit tests) when Google changes the UI.
+> **Gemini DOM facts (verified live; the un-unit-testable layer — Google changes this without warning).** The composer is a **Quill editor (Angular Material), not React.** **Inject text by writing Quill's model with the `'user'` source: `quill.setText(text, 'user')` (then `setSelection`).** On the current `new-input-ui` composer (as of 2026-06), `execCommand('insertText')` updates the DOM but **desyncs Quill's model**, and `quill.setText` with the default `'api'` source syncs the model but leaves **Send disabled** — only a `'user'`-source text-change arms Send. The content script's **isolated world cannot reach `__quill`**, so `injectText` posts the text to the **MAIN-world bridge** (`entrypoints/uploader.content.ts`, message `{__gla:'quill-set'}`), which calls the Quill API; `triggerSend()`'s synthetic click then submits. Send readiness is gated by **`pointer-events`/`disabled`** (don't trust `disabled` alone). File upload works by hooking `HTMLInputElement.prototype.click` from the MAIN world and feeding a `DataTransfer`; synthetic paste and drag-drop do **not** work. All of this lives in `utils/injection.ts` and `entrypoints/uploader.content.ts`, and must be re-verified against live Gemini (not unit tests) when Google changes the UI (see #16 for the `new-input-ui` break).
 
 2. **Middleware (`background.ts` + Native Messaging)** — A Manifest V3 service worker that maintains a `browser.runtime.connectNative` port to `com.local.gemini_agent`. Routes messages between `content.ts` and `host.py`. Uses `browser.storage.session` to persist the sender tab ID so responses can be routed correctly even after the service worker sleeps and wakes up.
 
@@ -149,10 +149,16 @@ python3 -m unittest discover -s test    # Python host tests (run from repo root 
 npm run build
 npm run test:browser:smoke        # extension SW + content script on Gemini
 npm run test:closed-loop          # Tier A: pipeline regressions (no Gemini model)
-npm run test:closed-loop:live     # Tier B: real Gemini multi-turn (logged-in gla-debug-profile)
+GLA_GEM_ID=<gem-id> npm run test:closed-loop:live   # Tier B: real Gemini multi-turn (logged-in gla-debug-profile)
 python3 -m test.closed_loop.run --scenario rerun_latest   # Tier C: rerun-last-action UX
 python3 -m test.closed_loop.run --list
 ```
+
+**Tier B must run inside the gem.** Set `GLA_GEM_ID` (the debug profile's "Gemini Local Agent"
+gem id from `gemini.google.com/gems/view`) or `GLA_GEM_URL`. Without it the harness uses bare
+`/app`, where Gemini's safety layer **refuses** local-agent shell actions (`{"action":"error"}`) —
+a false negative, not a pipeline bug. The gem delivers `GEM_PROMPT.md` as *system instructions*,
+which suppress the refusal an inline chat rule can't (verified live 2026-06-02).
 
 Scenarios and timing rules: `.claude/skills/debugging-gemini-agent/knowledge/closed-loop-scenarios.md`.
 Ad-hoc probes (`test/live_browser_agent.py`, `test/loop_dedup_browser.py`) are deprecated in favor of

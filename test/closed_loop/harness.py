@@ -8,6 +8,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 # test/e2e_browser.py
@@ -21,6 +22,110 @@ DEFAULT_PORT = 9222
 HOST_LOG = "/tmp/gemini_host.log"
 SETTLING_WAIT_S = 6
 DEFAULT_COOLDOWN_WAIT_S = 16
+
+_VERBOSE = False
+
+
+def set_verbose(enabled: bool) -> None:
+    global _VERBOSE
+    _VERBOSE = enabled
+
+
+def log_step(msg: str) -> None:
+    if not _VERBOSE:
+        return
+    ts = datetime.now().strftime("%H:%M:%S")
+    print(f"[{ts}] {msg}", flush=True)
+
+_ACTION_LOG_MARKERS: dict[str, str] = {
+    "read_file": "Reading file:",
+    "write_file": "Writing file:",
+    "run_shell": "Executing shell command:",
+    "run_python": "Running Python code",
+    "git_status": "Git status",
+    "git_diff": "Git diff",
+    "list_files": "Listing files:",
+}
+
+
+def _recv_timeout_expected(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return any(
+        token in msg
+        for token in ("timed out", "timeout", "disconnect", "closed", "connection")
+    )
+
+
+def host_log_offset() -> int:
+    """Character offset into the host log (not byte count)."""
+    try:
+        with open(HOST_LOG, encoding="utf-8") as fh:
+            return len(fh.read())
+    except OSError:
+        return 0
+
+
+def capture_failure_artifacts(port: int, label: str) -> str | None:
+    """Save a screenshot + composer/send/thread state when a scenario fails, so a failed run is
+    never blind (Rule 0 / #17). Attaches to the existing tab WITHOUT reloading (preserves the
+    failure state). Best-effort: never raises — a capture error must not mask the real failure."""
+    import base64
+
+    out_dir = Path("/tmp/closed_loop_failures")
+    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in label)
+    stamp = time.strftime("%H%M%S")
+    saved: list[str] = []
+    cdp = None
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        cdp = CDPClient(port)
+        page = find_target(cdp, _is_gemini_app_page)
+        if not page:
+            return None
+        page_sess = attach_to_target(cdp, page["targetId"])
+        try:
+            cdp.send("Page.enable", session_id=page_sess)
+            mid = cdp.send("Page.captureScreenshot", {"format": "png"}, session_id=page_sess)
+            data = (cdp.recv(mid, timeout=10.0) or {}).get("result", {}).get("data")
+            if data:
+                png = out_dir / f"{safe}_{stamp}.png"
+                png.write_bytes(base64.b64decode(data))
+                saved.append(str(png))
+        except Exception as exc:  # capture must not mask the real failure
+            log_step(f"capture: screenshot failed ({exc})")
+        try:
+            state = evaluate(cdp, page_sess, """(() => {
+              const ed = document.querySelector('.ql-editor.textarea') || document.querySelector('.ql-editor');
+              const send = document.querySelector('button[aria-label="Send message"]');
+              return {
+                url: location.href,
+                composerLen: ed ? (ed.innerText||'').trim().length : null,
+                composerText: ed ? (ed.innerText||'').slice(0, 300) : null,
+                qlBlank: ed ? ed.classList.contains('ql-blank') : null,
+                sendPointerEvents: send ? getComputedStyle(send).pointerEvents : 'no-send-button',
+                sendDisabled: send ? send.disabled : null,
+                userQueries: document.querySelectorAll('user-query').length,
+                modelResponses: document.querySelectorAll('model-response').length,
+                threadHasSystemResult: document.body.innerText.includes('System Result'),
+              };
+            })()""").get("value")
+            js = out_dir / f"{safe}_{stamp}.json"
+            js.write_text(json.dumps(state, indent=2))
+            saved.append(str(js))
+        except Exception as exc:
+            log_step(f"capture: DOM state failed ({exc})")
+    except Exception as exc:
+        log_step(f"capture: could not attach for artifacts ({exc})")
+        return None
+    finally:
+        if cdp is not None:
+            try:
+                cdp.close()
+            except Exception:
+                pass
+    if saved:
+        print(f"  ↳ failure artifacts: {', '.join(saved)}", file=sys.stderr)
+    return out_dir.as_posix() if saved else None
 
 
 def _is_gemini_app_page(target: dict) -> bool:
@@ -83,6 +188,7 @@ def close_extra_gemini_tabs(cdp: CDPClient) -> int:
 
 
 def connect(port: int = DEFAULT_PORT) -> BrowserSession:
+    log_step(f"connect: attaching CDP on :{port}")
     ensure_cdp(port)
     cdp = CDPClient(port)
     close_extra_gemini_tabs(cdp)
@@ -95,6 +201,15 @@ def connect(port: int = DEFAULT_PORT) -> BrowserSession:
     if not sw:
         cdp.close()
         raise RuntimeError("Extension service worker not found — load .output/chrome-mv3")
+    if not page:
+        mid = cdp.send("Target.createTarget", {"url": "https://gemini.google.com/app"})
+        try:
+            cdp.recv(mid, timeout=15.0)
+        except RuntimeError as exc:
+            if not _recv_timeout_expected(exc):
+                raise
+        time.sleep(4.0)
+        page = find_target(cdp, _is_gemini_app_page)
     if not page:
         cdp.close()
         raise RuntimeError("No gemini.google.com tab — open or navigate to Gemini")
@@ -110,20 +225,31 @@ def connect(port: int = DEFAULT_PORT) -> BrowserSession:
     cdp.send("Log.enable", session_id=page_sess)
 
     ext_id = sw["url"].split("/")[2]
+    log_step(f"connect: ready (ext={ext_id[:8]}…, page={page.get('url', '')[:60]})")
     return BrowserSession(cdp, port, sw, page, sw_sess, page_sess, ext_id)
 
 
 def reconnect_gemini_page(sess: BrowserSession) -> None:
+    log_step("reconnect_gemini_page: re-attaching to Gemini tab")
     sess.cdp.drain_events(timeout=0.3)
-    page = find_target(sess.cdp, _is_gemini_app_page)
+    deadline = time.time() + 20.0
+    page = None
+    while time.time() < deadline:
+        page = find_target(sess.cdp, _is_gemini_app_page)
+        if page:
+            break
+        time.sleep(0.5)
     if not page:
         raise RuntimeError("No gemini.google.com tab — open Gemini in debug Brave")
     sess.page_target = page
     new_sess = attach_to_target(sess.cdp, page["targetId"])
-    if new_sess:
-        sess.page_sess = new_sess
-        sess.cdp.send("Runtime.enable", session_id=sess.page_sess)
-        sess.cdp.send("Log.enable", session_id=sess.page_sess)
+    if not new_sess:
+        raise RuntimeError(
+            "reconnect_gemini_page: attach_to_target returned None (stale session)"
+        )
+    sess.page_sess = new_sess
+    sess.cdp.send("Runtime.enable", session_id=sess.page_sess)
+    sess.cdp.send("Log.enable", session_id=sess.page_sess)
 
 
 def reload_extension(sess: BrowserSession) -> None:
@@ -136,8 +262,9 @@ def reload_extension(sess: BrowserSession) -> None:
     )
     try:
         sess.cdp.recv(mid, timeout=2.0)
-    except Exception:
-        pass
+    except RuntimeError as exc:
+        if not _recv_timeout_expected(exc):
+            raise
     time.sleep(3)
     sw = None
     for _ in range(20):
@@ -170,12 +297,14 @@ def _console_text_from_event(evt: dict) -> str:
 
 def wait_gemini_content_script(sess: BrowserSession, timeout_s: float = 30.0) -> None:
     """Wait for [Gemini Agent] content script init log after navigation/reload."""
+    log_step("wait_gemini_content_script: waiting for content script init")
     deadline = time.time() + timeout_s
     while time.time() < deadline:
         for evt in sess.cdp.drain_events(timeout=0.4):
             text = _console_text_from_event(evt)
             if "[Gemini Agent]" in text and "Content script loaded" in text:
                 time.sleep(0.5)
+                log_step("wait_gemini_content_script: content script ready")
                 return
         time.sleep(0.3)
     raise RuntimeError("Gemini content script did not load (no console init log)")
@@ -183,16 +312,19 @@ def wait_gemini_content_script(sess: BrowserSession, timeout_s: float = 30.0) ->
 
 def reload_gemini_tab(sess: BrowserSession) -> None:
     """Full page reload so MV3 content script injects on the active Gemini tab."""
+    log_step("reload_gemini_tab: starting page reload")
     sess.cdp.drain_events(timeout=0.2)
     mid = sess.cdp.send("Page.reload", session_id=sess.page_sess)
     try:
         sess.cdp.recv(mid, timeout=20.0)
-    except Exception:
-        pass
+    except RuntimeError as exc:
+        if not _recv_timeout_expected(exc):
+            raise
     time.sleep(2.0)
     reconnect_gemini_page(sess)
     wait_gemini_content_script(sess)
     time.sleep(SETTLING_WAIT_S)
+    log_step("reload_gemini_tab: complete")
 
 
 def read_storage(sess: BrowserSession) -> dict:
@@ -231,9 +363,13 @@ def host_exec_count(command_substring: str, after_index: int = 0) -> int:
     except FileNotFoundError:
         return 0
     chunk = text[after_index:]
+    action_marker = _ACTION_LOG_MARKERS.get(command_substring)
     n = 0
     for line in chunk.splitlines():
-        if "Executing shell command:" in line and command_substring in line:
+        if action_marker:
+            if action_marker in line:
+                n += 1
+        elif "Executing shell command:" in line and command_substring in line:
             n += 1
     return n
 
@@ -289,7 +425,14 @@ def inject_synthetic_block(sess: BrowserSession, payload_json: str) -> None:
 
 
 def page_eval(sess: BrowserSession, expression: str, await_promise: bool = False) -> dict:
-    raw = evaluate(sess.cdp, sess.page_sess, expression, await_promise=await_promise)
+    try:
+        raw = evaluate(sess.cdp, sess.page_sess, expression, await_promise=await_promise)
+    except RuntimeError as exc:
+        if "CDP evaluate timed out" not in str(exc):
+            raise
+        log_step("page_eval: CDP timeout — reconnecting Gemini page and retrying once")
+        reconnect_gemini_page(sess)
+        raw = evaluate(sess.cdp, sess.page_sess, expression, await_promise=await_promise)
     if isinstance(raw, dict) and "value" in raw:
         return {"value": raw["value"]}
     return {"value": raw}

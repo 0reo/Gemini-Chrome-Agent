@@ -44,13 +44,19 @@ cheap thing to rule out early — *did it already run and auto-submit a `System 
 That's possible, but in the motivating incident this exact guess was **wrong**; treat it as one branch to
 confirm, never the default answer.
 
-## The Four Rules (these are non-negotiable)
+## The Rules (non-negotiable)
 
-These exist because the last assistant that debugged this (without this skill) violated all four:
-it read `content.ts`, saw a "default to paused" line, **guessed** "it's paused," **edited** `dedup.ts`
-and `content.ts` on that guess, then told the user *"check the chat for a System Result yourself."* The
-guess was wrong — live storage actually had `isAgentPaused: false` — so it burned ~30 messages editing
-code around a cause that wasn't there, having never read a single runtime surface first.
+These exist because assistants debugging this keep making the same two mistakes — **guessing from
+source**, and **trusting logs over the page**.
+
+0. **LOOK before you theorize.** The instant live behavior is wrong, your FIRST action is a
+   **screenshot + DOM snapshot** of the Gemini tab via the `brave-debug` MCP (`take_screenshot`,
+   `take_snapshot`, `evaluate_script`) — *before* forming any hypothesis from logs. In the session that
+   added this rule, **four** wrong theories (state-carryover, model non-determinism, throttling,
+   synthetic-vs-trusted input) and ~5 live test runs were collapsed to two seconds by one screenshot: the
+   prompt was sitting **unsent in the composer** while the log cheerfully reported `sent via click`. A log
+   describes what the code *thinks* happened; the screenshot shows what *is*. If you're forming a third
+   hypothesis without having looked at the page, stop and look.
 
 1. **Read live state — never infer it from source.** Before any hypothesis, read the runtime: extension
    storage, the three console/log surfaces, and the live DOM. Source tells you what *could* happen;
@@ -66,6 +72,20 @@ code around a cause that wasn't there, having never read a single runtime surfac
    one is up (see `knowledge/live-browser-driving.md` → *Tab & window hygiene*).
 4. **Do not edit code until evidence confirms the diagnosis.** A guard that *could* swallow a payload
    is not proof that it *did*. Reproduce with evidence first; patch second.
+5. **A "sent"/"injected" log is not proof — verify the EFFECT, in two stages.** Driving the Gemini UI
+   has two *distinct* successes, and conflating them cost an entire session:
+   (a) **input registered** — the composer shows the text and `.ql-editor` lost `ql-blank`; and
+   (b) **submit fired** — the composer *cleared* and a new user-turn / `System Result:` appeared.
+   A click/keypress that "ran" proves neither. Never report a send/inject as successful on the *action*;
+   report it on the observed *effect*. (This is #15's host-gated-assertion principle applied to the
+   driving layer: the harness was logging `sent via click` while the message sat unsent.)
+6. **When send or inject suddenly breaks, re-verify the live DOM contract first.** Google ships Gemini UI
+   changes without warning. Before assuming a code bug, screenshot the page and probe the *actual* submit
+   path: which element holds the text, which button submits, and whether it submits at all (try
+   click → pointer-sequence → real keystroke + Enter, each with a post-wait effect check). The session
+   that added this rule hit a `new-input-ui` composer where **every** input method failed to submit — a
+   Gemini-side change, not our bug. Selectors + submit mechanics in `utils/injection.ts` / `gemini_ui.py`
+   must be re-checked against the live page, never trusted from memory.
 
 ## Diagnostic decision tree (memorize this)
 
@@ -157,4 +177,4 @@ Symptom→fix tables for host-not-found, SW sleep, phantom duplicates, injection
 - You're about to tell the user to look at something you have CDP access to read yourself.
 - You opened the browser and stopped.
 
-**All of these mean: go read the live evidence first (Rules 1–3).**
+**All of these mean: look at the page and read the live evidence first (Rules 0–3, 5).**

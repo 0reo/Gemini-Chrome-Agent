@@ -9,19 +9,13 @@ from ..gemini_ui import trigger_rerun_latest
 from ..harness import (
     connect,
     host_exec_count,
+    host_log_offset,
     inject_synthetic_block,
     reload_extension,
     reload_gemini_tab,
     set_agent_active,
 )
 from ..pipeline_assert import PipelineFailure, assert_single_host_execution, wait_cooldown, TurnContext
-
-
-def _host_offset() -> int:
-    try:
-        return os.path.getsize("/tmp/gemini_host.log")
-    except OSError:
-        return 0
 
 
 def run_rerun_latest(port: int) -> None:
@@ -33,7 +27,7 @@ def run_rerun_latest(port: int) -> None:
         time.sleep(2)
         marker = "gla_rerun_latest_once"
         payload = f'{{"action":"run_shell","command":"echo {marker}"}}'
-        offset = _host_offset()
+        offset = host_log_offset()
         inject_synthetic_block(sess, payload)
         time.sleep(12)
         first = host_exec_count(marker, offset)
@@ -42,8 +36,10 @@ def run_rerun_latest(port: int) -> None:
         ctx = TurnContext(marker=marker, host_log_offset=offset)
         wait_cooldown(ctx)
 
-        offset2 = _host_offset()
-        trigger_rerun_latest(sess)
+        offset2 = host_log_offset()
+        ret = trigger_rerun_latest(sess)
+        if not ret.get("ok"):
+            raise PipelineFailure("trigger", f"rerun trigger failed: {ret}")
         time.sleep(12)
         total = host_exec_count(marker, offset)
         if total < 2:

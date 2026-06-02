@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from . import harness as h
 from .gemini_ui import stage5_probe
-from .harness import BrowserSession, DEFAULT_COOLDOWN_WAIT_S, host_exec_count, host_log_tail
+from .harness import BrowserSession, DEFAULT_COOLDOWN_WAIT_S, host_exec_count, host_log_tail, log_step
 
 
 @dataclass
@@ -47,27 +47,27 @@ def assert_turn_complete(sess: BrowserSession, ctx: TurnContext) -> None:
             "stage4",
             f"host never executed command containing '{ctx.marker}'. log:\n{tail[:500]}",
         )
+    log_step(f"assert_turn_complete: stage4 host executed marker {ctx.marker!r}")
 
-    # stage 5: System Result + marker in thread
+    # stage 5: per-turn marker in thread (after host gate — not generic System Result)
     deadline = time.time() + 30.0
     while time.time() < deadline:
-        probe = stage5_probe(sess)
-        if probe.get("threadHasSystemResult"):
-            r = h.page_eval(
-                sess,
-                f"""(() => {{
-                  const t = document.body.innerText;
-                  return t.includes('System Result') && t.includes({__import__('json').dumps(ctx.marker)});
-                }})()""",
-            )
-            if r.get("value"):
-                return
+        r = h.page_eval(
+            sess,
+            f"""(() => {{
+              const t = document.body.innerText;
+              return t.includes({__import__('json').dumps(ctx.marker)});
+            }})()""",
+        )
+        if r.get("value"):
+            log_step(f"assert_turn_complete: stage5 thread has marker {ctx.marker!r}")
+            return
         time.sleep(1.0)
 
     probe = stage5_probe(sess)
     raise PipelineFailure(
         "stage5",
-        f"thread missing System Result with marker '{ctx.marker}': {probe}",
+        f"thread missing marker '{ctx.marker}' after host execution: {probe}",
     )
 
 

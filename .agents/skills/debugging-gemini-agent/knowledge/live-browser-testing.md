@@ -85,6 +85,28 @@ via the model menu before Tier B scenarios; pick it manually if the UI changed.
 - **Works synthetically, fails on real Gemini** → inspect the real code-block node (renderer split /
   inline / streaming): `[...document.querySelectorAll('pre code, code')].map(n=>n.textContent.slice(0,80))`.
 
+## Harness progress logging (`--verbose`)
+
+Tier B scenarios can take several minutes per turn (Gemini model latency + action JSON wait up to 300 s).
+Without progress output the run looks hung. Use:
+
+```bash
+python3 -m test.closed_loop.run --tier B --verbose
+# or
+python3 -m test.closed_loop.run --scenario shell_roundtrip -v
+```
+
+Each step prints a timestamped line to stdout (`flush=True`), e.g. connect, reload, send_prompt,
+wait_for_action_codeblock, stage4/stage5 assertions. Rough durations (Flash/Thinking, logged-in profile):
+
+| Scenario | Typical wall time |
+|----------|-------------------|
+| `shell_roundtrip` | 2–6 min (one turn) |
+| `file_roundtrip` | 5–12 min (write + read) |
+| `agent_chain` | 5–10 min (shell + read) |
+
+CDP `page_eval` auto-reconnects once on evaluate timeout (stale session after tab reload).
+
 ## Definition of done
 A full multi-turn task (≥ the 6 turns above, mixing ≥4 action types) completes end-to-end against **real**
 Gemini, every `System Result:` auto-sent and consumed, no manual intervention beyond cooldown pacing, no
