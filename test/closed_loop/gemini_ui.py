@@ -3,12 +3,33 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 
 from .harness import BrowserSession, log_step, page_eval
 
 # Keep in sync with ACTION_BLOCK_SELECTOR in entrypoints/content.ts
 ACTION_BLOCK_SELECTOR_JS = "'pre code, code, pre code.language-json, pre code.hljs'"
+
+
+def _fresh_chat_url() -> str:
+    """Where ensure_fresh_chat lands a new thread.
+
+    Tier B must run *inside the gem* — bare Gemini (/app) refuses local-agent
+    shell actions because the model's safety layer fires; the gem's identical
+    instructions, delivered as *system instructions*, suppress that refusal
+    (verified live 2026-06-02: the same run_shell prompt → `action:error` on
+    /app, clean emission + full host roundtrip under the gem). Set GLA_GEM_URL
+    (or GLA_GEM_ID) to the debug profile's "Gemini Local Agent" gem; without it
+    the harness falls back to /app and shell scenarios will hit the refusal.
+    """
+    url = os.environ.get("GLA_GEM_URL", "").strip()
+    if url:
+        return url
+    gem_id = os.environ.get("GLA_GEM_ID", "").strip()
+    if gem_id:
+        return f"https://gemini.google.com/gem/{gem_id}"
+    return "https://gemini.google.com/app"
 
 
 def trigger_rerun_latest(sess: BrowserSession) -> dict:
@@ -426,7 +447,7 @@ def send_until_action(
 
     last = "unknown"
     for attempt in range(1, retries + 1):
-        baseline = _gemini_said_count(sess)
+        baseline = _model_reply_count(sess)
         sent = send_prompt(sess, text, timeout_s=45.0)
         if not sent.get("sent"):
             last = f"send not confirmed ({sent.get('reason')})"
@@ -448,6 +469,14 @@ def send_until_action(
 
 
 def click_new_chat(sess: BrowserSession) -> bool:
+    target = _fresh_chat_url()
+    # A configured gem must be entered by URL: the sidebar "New chat" control
+    # leaves the gem and drops back to bare Gemini (/app), where shell actions
+    # are refused. Navigating to the gem URL opens a fresh thread under it.
+    if "/gem/" in target:
+        page_eval(sess, f"location.href = {json.dumps(target)};")
+        time.sleep(3)
+        return True
     r = page_eval(
         sess,
         """(() => {
@@ -488,11 +517,12 @@ def _response_count(sess: BrowserSession) -> int:
 
 def ensure_fresh_chat(sess: BrowserSession) -> None:
     """Start a clean chat thread (no stale model-response nodes)."""
+    target = _fresh_chat_url()
     for attempt in range(3):
         click_new_chat(sess)
         if _response_count(sess) == 0:
             return
-        page_eval(sess, "location.href = 'https://gemini.google.com/app';")
+        page_eval(sess, f"location.href = {json.dumps(target)};")
         time.sleep(4)
     if _response_count(sess) > 0:
         raise PipelineFailure(
@@ -560,10 +590,19 @@ def wait_for_thread_marker(
     return False
 
 
-def _gemini_said_count(sess: BrowserSession) -> int:
+def _model_reply_count(sess: BrowserSession) -> int:
+    """Count model reply turns structurally via <model-response> elements.
+
+    Do NOT scrape the localized "Gemini said" string: under a gem the reply is
+    attributed "<GemName> said" (e.g. "Gemini Local Agent said"), which contains
+    no "Gemini said" substring — so a text match silently never increments and
+    every send looks like "Gemini did not reply" (false stage-1 failure). The
+    element count is attribution-agnostic and also can't collide with the user's
+    own "You said" turns.
+    """
     r = page_eval(
         sess,
-        """(() => (document.body.innerText.match(/Gemini said/g) || []).length)()""",
+        """(() => document.querySelectorAll('model-response').length)()""",
     )
     return int(r.get("value") or 0)
 
@@ -573,13 +612,13 @@ def wait_for_gemini_reply(
     timeout_s: float = 120.0,
     baseline_said: int | None = None,
 ) -> bool:
-    """Wait until a new model turn appears (Gemini said count increases)."""
+    """Wait until a new model turn appears (model-response count increases)."""
     if baseline_said is None:
-        baseline_said = _gemini_said_count(sess)
+        baseline_said = _model_reply_count(sess)
     log_step(f"wait_for_gemini_reply: waiting (baseline={baseline_said})")
     deadline = time.time() + timeout_s
     while time.time() < deadline:
-        if _gemini_said_count(sess) > baseline_said:
+        if _model_reply_count(sess) > baseline_said:
             log_step("wait_for_gemini_reply: new reply detected")
             return True
         time.sleep(2.0)

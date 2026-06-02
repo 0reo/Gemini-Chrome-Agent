@@ -149,10 +149,16 @@ python3 -m unittest discover -s test    # Python host tests (run from repo root 
 npm run build
 npm run test:browser:smoke        # extension SW + content script on Gemini
 npm run test:closed-loop          # Tier A: pipeline regressions (no Gemini model)
-npm run test:closed-loop:live     # Tier B: real Gemini multi-turn (logged-in gla-debug-profile)
+GLA_GEM_ID=<gem-id> npm run test:closed-loop:live   # Tier B: real Gemini multi-turn (logged-in gla-debug-profile)
 python3 -m test.closed_loop.run --scenario rerun_latest   # Tier C: rerun-last-action UX
 python3 -m test.closed_loop.run --list
 ```
+
+**Tier B must run inside the gem.** Set `GLA_GEM_ID` (the debug profile's "Gemini Local Agent"
+gem id from `gemini.google.com/gems/view`) or `GLA_GEM_URL`. Without it the harness uses bare
+`/app`, where Gemini's safety layer **refuses** local-agent shell actions (`{"action":"error"}`) —
+a false negative, not a pipeline bug. The gem delivers `GEM_PROMPT.md` as *system instructions*,
+which suppress the refusal an inline chat rule can't (verified live 2026-06-02).
 
 Scenarios and timing rules: `.claude/skills/debugging-gemini-agent/knowledge/closed-loop-scenarios.md`.
 Ad-hoc probes (`test/live_browser_agent.py`, `test/loop_dedup_browser.py`) are deprecated in favor of
