@@ -433,9 +433,12 @@ def send_prompt(
                     clicked = True
                     log_step("send_prompt: clicked Send; verifying it actually submits")
             if not tried_enter and time.time() > deadline - timeout_s * 0.5:
-                page_eval(sess, submit_enter_js)
+                enter_res = page_eval(sess, submit_enter_js).get("value") or {}
                 tried_enter = True
-                log_step("send_prompt: click did not submit yet; tried Enter")
+                # Log the actual Enter-dispatch result: if it reports not-ok (e.g. no
+                # composer), a later 'submit_not_confirmed' with enter=True is misleading
+                # — the fallback never really fired (#18 review of !2).
+                log_step(f"send_prompt: click did not submit yet; tried Enter ({enter_res})")
             time.sleep(0.25)
         log_step(
             "send_prompt: submit NOT confirmed — composer never cleared "
@@ -508,6 +511,10 @@ def click_new_chat(sess: BrowserSession) -> bool:
     # are refused. Navigating to the gem URL opens a fresh thread under it.
     if "/gem/" in target:
         page_eval(sess, f"location.href = {json.dumps(target)};")
+        # A URL check can't confirm a gem→gem navigation (same /gem/<id> base in old and
+        # new chat URLs), so the *outcome* is verified by the caller: ensure_fresh_chat
+        # only proceeds once _response_count(sess) == 0, i.e. a genuinely fresh thread,
+        # and otherwise retries the navigation (#18 review of !2).
         time.sleep(3)
         return True
     r = page_eval(
@@ -550,6 +557,8 @@ def _response_count(sess: BrowserSession) -> int:
 
 def ensure_fresh_chat(sess: BrowserSession) -> None:
     """Start a clean chat thread (no stale model-response nodes)."""
+    from .pipeline_assert import PipelineFailure  # sibling module; local import avoids cycle
+
     target = _fresh_chat_url()
     for attempt in range(3):
         click_new_chat(sess)

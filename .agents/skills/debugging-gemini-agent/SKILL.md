@@ -168,7 +168,7 @@ Symptom→fix tables for host-not-found, SW sleep, phantom duplicates, injection
 | "A guard could have eaten it — let me fix the guard." | *Could* ≠ *did*. Reproduce with console evidence before editing anything. |
 | "No `[Gemini Agent]` logs in MCP, so the content script is dead." | MCP sees MAIN world; the script is ISOLATED. Check storage/DOM instead. |
 | "Send button isn't `disabled`, so it's clickable." | Gemini gates Send with `pointer-events:none`, not `disabled`. Check computed `pointer-events`. |
-| "I injected text and it shows on screen, so injection worked." | Raw DOM mutation leaves Quill's model empty (`ql-blank` stays) and Send never arms. Use `execCommand('insertText')`. |
+| "I injected text and it shows on screen, so injection worked." | Text in the DOM ≠ injection worked. On new-input-ui, `execCommand('insertText')` desyncs Quill's model and Send stays disabled (#16). Use `quill.setText(text, 'user')` via the MAIN-world bridge; verify BOTH `.ql-editor` loses `ql-blank` AND Send `pointer-events !== 'none'`. |
 
 ## Red flags — you are about to repeat the baseline failure
 

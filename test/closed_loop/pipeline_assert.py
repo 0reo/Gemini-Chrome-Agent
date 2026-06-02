@@ -56,7 +56,13 @@ def assert_turn_complete(sess: BrowserSession, ctx: TurnContext) -> None:
             sess,
             f"""(() => {{
               const t = document.body.innerText;
-              return t.includes({__import__('json').dumps(ctx.marker)});
+              const marker = {__import__('json').dumps(ctx.marker)};
+              // The prompt also contains the marker (e.g. `echo <marker>`), so a bare
+              // includes() can match the prompt and proves nothing past the stage-4 host
+              // gate. Require the marker AT/AFTER a "System Result" block so it is the
+              // injected command output, not the user's prompt (#18 review of !2).
+              const sr = t.lastIndexOf('System Result');
+              return sr >= 0 && t.indexOf(marker, sr) >= 0;
             }})()""",
         )
         if r.get("value"):

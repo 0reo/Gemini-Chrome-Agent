@@ -44,11 +44,18 @@ export default defineContentScript({
         if (q && typeof q.setText === 'function') {
           // 'user' source is REQUIRED: Quill emits text-change as user input, which arms Gemini's
           // Send button on new-input-ui. Default 'api' syncs the model but leaves Send disabled (#16).
-          q.setText(text, 'user');
-          try { q.setSelection(q.getLength(), 0); } catch { /* selection is best-effort */ }
-          return;
+          try {
+            q.setText(text, 'user');
+            try { q.setSelection(q.getLength(), 0); } catch { /* selection is best-effort */ }
+            return;
+          } catch {
+            // Quill API threw — fall through to execCommand instead of silently leaving
+            // the composer unchanged. The isolated-world caller (injectText) already
+            // returned true, so a swallowed error here would let triggerSend auto-submit
+            // an empty message (#18 review of !2).
+          }
         }
-        // fallback (old UI / no Quill instance): execCommand
+        // fallback (old UI / no Quill instance / setText threw): execCommand
         document.execCommand('selectAll', false, undefined);
         document.execCommand('delete', false, undefined);
         document.execCommand('insertText', false, text);
