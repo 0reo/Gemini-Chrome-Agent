@@ -124,14 +124,20 @@ actual chat, not a test you injected.
    conversation turn / URL. If yes → it ran; verify it's the user's payload and not your own test echo.
    (In the motivating incident an assistant *assumed* this was the answer and was wrong — the payload had
    actually been dropped by a load-time guard, stage 2. Confirm; don't assume.)
-2. **Quill model, not just pixels.** Gemini's composer is a **Quill editor (Angular Material)**. Raw DOM
-   mutation (`innerText`, `insertNode`) shows text but leaves Quill's model empty → the `.ql-editor`
-   keeps its `ql-blank` class → Send never arms. Injection MUST use `document.execCommand('insertText')`.
-   Probe: after injecting, `.ql-editor` should **lose** `ql-blank`.
-3. **Send gate is `pointer-events`, not `disabled`.** Gemini's Send button keeps `disabled === false`
-   (and `aria-disabled` null) even when empty; it gates clicks with CSS `pointer-events: none`. A
-   `!btn.disabled` check is meaningless — it always "clicks" and silently no-ops. Readiness is
-   `getComputedStyle(btn).pointerEvents !== 'none'`. If it stays `none` after injection, step 2 failed.
+2. **Two distinct stages — input registered AND Send armed (verify both).** Gemini's composer is a
+   **Quill editor (Angular Material)**, and on the current `new-input-ui` the two can diverge:
+   - **`execCommand('insertText')`** updates the DOM but **desyncs Quill's model** → text shows, but a
+     click submits the wrong/empty model. (This was the long-standing advice; it's now obsolete for this UI.)
+   - **`quill.setText(text)` with the default `'api'` source** syncs the model but leaves **Send disabled**.
+   - **`quill.setText(text, 'user')`** syncs the model AND arms Send — the model change is emitted as
+     *user* input, which is what Angular gates Send on. This is the working method (#16). The content
+     script's isolated world can't reach `__quill`, so the extension does it via a MAIN-world bridge
+     (`uploader.content.ts`); a CDP probe (MAIN world) can call it directly.
+   Probe both: after injecting, `.ql-editor` loses `ql-blank` (input) **and** the Send button enables (arm).
+3. **Send gate is `pointer-events`/`disabled` — and arming needs a `'user'`-source change.** The button is
+   gated by computed `pointer-events: none` and/or `disabled`; a bare `!btn.disabled` check is meaningless.
+   Readiness is `!btn.disabled && getComputedStyle(btn).pointerEvents !== 'none'`. If it stays disabled
+   after injection, the model change wasn't emitted as `'user'` (step 2) — text in the box is not enough.
 4. **Input-hijack guard / auto-submit.** `injectText()` returns `false` if the user is actively typing
    (so the agent doesn't send the user's half-finished text). Callers must honor that return value before
    `triggerSend()`. Auto-submit can also be turned off in the popup (`autoSubmit:false`) — then the
