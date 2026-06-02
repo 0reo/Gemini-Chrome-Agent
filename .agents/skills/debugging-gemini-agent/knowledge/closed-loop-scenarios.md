@@ -50,7 +50,8 @@ prompts (faster replies). The model choice does *not* substitute for the gem: Fl
 |----|-------|---------|
 | `shell_roundtrip` | 1 | `run_shell` with unique marker |
 | `file_roundtrip` | 2 | `write_file` then `read_file` under `/tmp/gla_e2e_*` |
-| `agent_chain` | 2 | shell writes file, read back |
+| `agent_chain` | 2 | shell writes file, read back (harness sends each turn) |
+| `autonomous_chain` | 3, hands-off | **One** seed; Gemini self-advances shell→write→read via **auto-submitted** System Results. The only scenario that exercises System-Result auto-submit (#18) and true autonomous chaining — every step gated on a real host exec, file must carry a runtime value (live hostname) the model can't pre-plan. A stall ⇒ auto-submit broke (#18), not a false green. |
 
 Between turns the harness waits **16s** (cooldown) and asserts stages 3–5 via host log +
 `System Result` in thread text (not composer-only).

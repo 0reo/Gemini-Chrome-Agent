@@ -253,8 +253,84 @@ def run_agent_chain(port: int) -> None:
         sess.close()
 
 
+def run_autonomous_chain(port: int) -> None:
+    """The hands-off agentic loop: send ONE seed, then Gemini + the extension must
+    self-advance a 3-step chain with NO further sends from the harness.
+
+    Unlike agent_chain (the harness sends every turn), here turns 2 and 3 can only
+    happen if the extension AUTO-SUBMITS each injected System Result and Gemini then
+    emits the next action on its own. So this is the only scenario that exercises
+    System-Result auto-submit (#18) and true autonomous chaining — and it is
+    false-green-proof: each step is gated on a real host execution, and the file
+    must carry a runtime value (the live hostname) the model could not pre-plan.
+    """
+    sess = connect(port)
+    run_id = uuid.uuid4().hex[:8]
+    marker = f"GLA_AUTO_{run_id}"
+    path = os.path.join(tempfile.gettempdir(), f"gla_auto_{run_id}.txt")
+    try:
+        _prepare_gemini_session(sess)
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+        offset = host_log_offset()
+        seed = (
+            "Autonomous 3-step task. Emit EXACTLY ONE json action block per message "
+            'and WAIT for each "System Result:" before the next step.\n'
+            f'Step 1: run the shell command  echo "{marker}_$(hostname)"\n'
+            f"Step 2: when you see the System Result, write its exact value into the "
+            f"file {path}\n"
+            f"Step 3: when the write is confirmed, read {path} back.\n"
+            "Begin with Step 1 now — emit only the Step 1 action."
+        )
+        log_step(f"autonomous_chain: seed (marker={marker})")
+        # The ONLY send. send_until_action may re-send the SEED if Gemini never
+        # starts, but it never sends turns 2/3 — those must come from Gemini via
+        # auto-submitted System Results.
+        send_until_action(sess, seed, marker, retries=3)
+
+        from ..harness import host_exec_count
+
+        # Hands-off: the host must execute all 3 actions with NO further sends. A
+        # missing step means the System Result auto-submit stalled (#18) or Gemini
+        # did not continue — either way the autonomous loop is broken.
+        steps = {"shell": False, "write": False, "read": False}
+        deadline = time.time() + 150.0
+        log_step("autonomous_chain: hands-off — awaiting Gemini-driven steps 2 & 3")
+        while time.time() < deadline:
+            steps["shell"] = host_exec_count(marker, offset) >= 1
+            steps["write"] = host_exec_count("write_file", offset) >= 1
+            steps["read"] = host_exec_count("read_file", offset) >= 1
+            if all(steps.values()):
+                break
+            assert_not_paused(sess)
+            time.sleep(2.0)
+        else:
+            raise PipelineFailure(
+                "autosubmit",
+                f"autonomous chain stalled hands-off: {steps} — a System Result was "
+                "likely injected but not auto-submitted (#18)",
+            )
+
+        # The chain must have carried the runtime value through (not pre-planned).
+        try:
+            with open(path) as f:
+                content = f.read().strip()
+        except OSError as exc:
+            raise PipelineFailure("stage5", f"chain file missing: {exc}") from exc
+        if not content.startswith(marker):
+            raise PipelineFailure(
+                "stage5", f"chain file {content[:60]!r} does not start with {marker!r}",
+            )
+        print(f"PASS autonomous_chain ({run_id})")
+    finally:
+        sess.close()
+
+
 TIER_B = {
     "shell_roundtrip": run_shell_roundtrip,
     "file_roundtrip": run_file_roundtrip,
     "agent_chain": run_agent_chain,
+    "autonomous_chain": run_autonomous_chain,
 }
