@@ -48,14 +48,19 @@ export default defineContentScript({
             q.setText(text, 'user');
             try { q.setSelection(q.getLength(), 0); } catch { /* selection is best-effort */ }
             return;
-          } catch {
-            // Quill API threw — fall through to execCommand instead of silently leaving
-            // the composer unchanged. The isolated-world caller (injectText) already
-            // returned true, so a swallowed error here would let triggerSend auto-submit
-            // an empty message (#18 review of !2).
+          } catch (e) {
+            // Surface the Quill error and stop — do NOT fall through to execCommand:
+            // on new-input-ui execCommand desyncs Quill's model (text shows but Send
+            // never arms), leaving stale text in the composer. An empty composer is
+            // cleaner; triggerSend's armed-Send gate then declines to submit rather
+            // than sending garbage. The isolated caller (injectText) already returned
+            // true, but triggerSend won't auto-submit an empty box (#18/!4 review).
+            // eslint-disable-next-line no-console
+            console.warn('[Gemini Agent][uploader] q.setText threw:', (e as Error)?.message || e);
+            return;
           }
         }
-        // fallback (old UI / no Quill instance / setText threw): execCommand
+        // fallback (no Quill instance — old UI): execCommand
         document.execCommand('selectAll', false, undefined);
         document.execCommand('delete', false, undefined);
         document.execCommand('insertText', false, text);

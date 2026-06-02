@@ -420,6 +420,7 @@ def send_prompt(
         deadline = time.time() + timeout_s
         clicked = False
         tried_enter = False
+        enter_ok = False
         while time.time() < deadline:
             cleared = page_eval(sess, cleared_check_js).get("value") or {}
             if cleared.get("composerEmpty"):
@@ -435,6 +436,7 @@ def send_prompt(
             if not tried_enter and time.time() > deadline - timeout_s * 0.5:
                 enter_res = page_eval(sess, submit_enter_js).get("value") or {}
                 tried_enter = True
+                enter_ok = bool(enter_res.get("ok"))
                 # Log the actual Enter-dispatch result: if it reports not-ok (e.g. no
                 # composer), a later 'submit_not_confirmed' with enter=True is misleading
                 # — the fallback never really fired (#18 review of !2).
@@ -448,7 +450,7 @@ def send_prompt(
             continue
         return {
             "ok": False, "sent": False, "reason": "submit_not_confirmed",
-            "clicked": clicked, "triedEnter": tried_enter,
+            "clicked": clicked, "triedEnter": tried_enter, "enterOk": enter_ok,
         }
     return {"ok": False, "sent": False, "reason": "send_exhausted"}
 
@@ -513,8 +515,8 @@ def click_new_chat(sess: BrowserSession) -> bool:
         page_eval(sess, f"location.href = {json.dumps(target)};")
         # A URL check can't confirm a gem→gem navigation (same /gem/<id> base in old and
         # new chat URLs), so the *outcome* is verified by the caller: ensure_fresh_chat
-        # only proceeds once _response_count(sess) == 0, i.e. a genuinely fresh thread,
-        # and otherwise retries the navigation (#18 review of !2).
+        # checks _response_count(sess) == 0 after each attempt, retries the navigation up
+        # to 3 times, and raises PipelineFailure if stale responses persist (#18 review of !2).
         time.sleep(3)
         return True
     r = page_eval(
