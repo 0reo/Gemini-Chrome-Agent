@@ -12,10 +12,55 @@ export default defineContentScript({
     window.addEventListener('message', async (ev: MessageEvent) => {
       if (ev.source !== window) return;
       const d = ev.data;
-      if (!d || d.__gla !== 'attach-request' || !Array.isArray(d.files)) return;
-      const result = await performUpload(d.files as FileDesc[]);
-      window.postMessage({ __gla: 'attach-result', nonce: d.nonce, ...result }, '*');
+      if (!d || typeof d.__gla !== 'string') return;
+      if (d.__gla === 'quill-set' && typeof d.text === 'string') {
+        setComposerText(d.text as string);
+        return;
+      }
+      if (d.__gla === 'attach-request' && Array.isArray(d.files)) {
+        const result = await performUpload(d.files as FileDesc[]);
+        window.postMessage({ __gla: 'attach-result', nonce: d.nonce, ...result }, '*');
+      }
     });
+
+    // Set Gemini's composer text by writing Quill's MODEL directly. On the new-input-ui composer
+    // the model (not the DOM) arms and submits the message; execCommand only mutates the DOM and no
+    // longer updates the model (issue #16). Running in the MAIN world, we can reach the page's
+    // Quill instance via its `__quill` property — the isolated content script cannot.
+    function setComposerText(text: string): void {
+      const ed = (document.querySelector('.ql-editor.textarea')
+        || document.querySelector('.ql-editor')
+        || document.querySelector('[role="textbox"][contenteditable="true"]')) as HTMLElement | null;
+      if (ed) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        let q: any = null;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        let node: any = ed;
+        for (let i = 0; i < 6 && node; i++) {
+          if (node.__quill) { q = node.__quill; break; }
+          node = node.parentElement;
+        }
+        ed.focus();
+        if (q && typeof q.setText === 'function') {
+          // 'user' source is REQUIRED: Quill emits text-change as user input, which arms Gemini's
+          // Send button on new-input-ui. Default 'api' syncs the model but leaves Send disabled (#16).
+          q.setText(text, 'user');
+          try { q.setSelection(q.getLength(), 0); } catch { /* selection is best-effort */ }
+          return;
+        }
+        // fallback (old UI / no Quill instance): execCommand
+        document.execCommand('selectAll', false, undefined);
+        document.execCommand('delete', false, undefined);
+        document.execCommand('insertText', false, text);
+        return;
+      }
+      const ta = document.querySelector('textarea') as HTMLTextAreaElement | null;
+      if (ta) {
+        ta.focus();
+        ta.value = text;
+        ta.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+    }
 
     const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
     const findButton = (pred: (b: HTMLButtonElement) => boolean): HTMLButtonElement | null =>
