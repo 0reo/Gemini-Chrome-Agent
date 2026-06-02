@@ -323,6 +323,19 @@ def run_autonomous_chain(port: int) -> None:
             raise PipelineFailure(
                 "stage5", f"chain file {content[:60]!r} does not start with {marker!r}",
             )
+        # Enforce the runtime value actually flowed through the chain: step 1 echoed
+        # "<marker>_$(hostname)", so the live hostname (which the model cannot pre-plan)
+        # must be present — otherwise the "depends on the prior System Result" property
+        # is not proven.
+        import socket
+
+        host = socket.gethostname().split(".")[0]
+        if host and host not in content:
+            raise PipelineFailure(
+                "stage5",
+                f"chain file {content[:80]!r} missing runtime hostname {host!r} — the "
+                "model may have pre-planned the value instead of reading the System Result",
+            )
         print(f"PASS autonomous_chain ({run_id})")
     finally:
         sess.close()

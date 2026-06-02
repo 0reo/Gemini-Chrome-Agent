@@ -122,6 +122,7 @@ export function triggerSend(): void {
     const e = (document.querySelector('.ql-editor.textarea')
       || document.querySelector('.ql-editor')
       || document.querySelector('[role="textbox"][contenteditable="true"]')
+      || document.querySelector('rich-textarea [contenteditable="true"]')
       || document.querySelector('textarea')) as HTMLElement | null;
     if (e instanceof HTMLTextAreaElement) return e.value.trim();
     return (e?.innerText || e?.textContent || '').trim();

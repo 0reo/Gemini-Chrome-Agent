@@ -117,7 +117,14 @@ def ensure_fast_model(sess: BrowserSession) -> dict:
             el,
             text: ((el.getAttribute('aria-label') || '') + ' ' + (el.textContent || '')).trim(),
           }));
-          const current = labels.find(x => /gemini/i.test(x.text) && x.text.length < 80);
+          // Detect the current model from the model-switcher button FIRST — it shows
+          // just "Flash"/"Thinking"/"Pro" (no "gemini"). Matching a generic "Gemini"
+          // label (app title) first made this miss, so the picker was opened needlessly;
+          // re-selecting the active model then leaves the menu open and its overlay
+          // blocks Send.
+          const current = labels.find(x => x.text.trim().length < 24
+                 && /\\b(flash|thinking|pro)\\b/i.test(x.text))
+            || labels.find(x => /gemini/i.test(x.text) && x.text.length < 80);
           if (current && prefer(current.text)) {
             return { ok: true, already: true, model: current.text.slice(0, 60) };
           }
@@ -137,6 +144,22 @@ def ensure_fast_model(sess: BrowserSession) -> dict:
     val = r.get("value") or {"ok": False}
     if val.get("ok") and not val.get("already"):
         time.sleep(1.5)
+    # Dismiss the model-picker overlay if it stayed open. Selecting the already-active
+    # model is a no-op that leaves the Angular-Material menu open, and its
+    # .cdk-overlay-backdrop then intercepts the Send click (composer looks armed but
+    # clicks never submit). Escape + backdrop-click closes it deterministically.
+    page_eval(
+        sess,
+        """(() => {
+          const open = document.querySelector('.cdk-overlay-backdrop, [role="listbox"], .mat-mdc-menu-panel');
+          if (!open) return { dismissed: false };
+          document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+          const bd = document.querySelector('.cdk-overlay-backdrop');
+          if (bd) { try { bd.click(); } catch {} }
+          return { dismissed: true };
+        })()""",
+    )
+    time.sleep(0.5)
     return val
 
 
