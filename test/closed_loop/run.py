@@ -34,7 +34,7 @@ ALL = {
 
 TIER_MAP = {
     "A": ["smoke", "loop_no_rerun", "load_historical_skip", "synthetic_happy", "dom_audit"],
-    "B": ["shell_roundtrip", "file_roundtrip", "agent_chain"],
+    "B": ["shell_roundtrip", "file_roundtrip", "agent_chain", "autonomous_chain"],
     "C": ["rerun_latest"],
 }
 
